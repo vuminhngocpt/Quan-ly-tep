@@ -744,14 +744,15 @@ class FileManagerViewModel(private val appContext: Context? = null) {
 
     fun extractArchive(
         archive: FileNode,
-        entries: List<ArchiveEntryItem>,
+        entries: List<ArchiveEntryItem>?,
         intoSubfolder: Boolean,
         extractAll: Boolean = false
     ) {
-        val effectiveEntries = if (extractAll && archive.archiveEntries.isNotEmpty()) {
-            archive.archiveEntries
+        val archiveList = archive.archiveEntries.orEmpty()
+        val effectiveEntries = if (extractAll && archiveList.isNotEmpty()) {
+            archiveList
         } else {
-            entries
+            entries.orEmpty()
         }
 
         if (!extractAll && effectiveEntries.isEmpty()) {
