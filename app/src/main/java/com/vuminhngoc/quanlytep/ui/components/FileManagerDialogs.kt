@@ -116,7 +116,14 @@ fun FileManagerDialogsHost(
     state.archiveModalTarget?.let { target ->
         ArchiveViewerDialog(
             archive = target,
-            onExtract = { entries, intoSub -> viewModel.extractArchive(target, entries, intoSub) },
+            onExtract = { entries, intoSub, extractAll ->
+                viewModel.extractArchive(
+                    archive = target,
+                    entries = entries,
+                    intoSubfolder = intoSub,
+                    extractAll = extractAll
+                )
+            },
             onDismiss = { viewModel.closeArchiveModal() }
         )
     }
@@ -648,10 +655,10 @@ private fun DocumentViewerDialog(
 @Composable
 private fun ArchiveViewerDialog(
     archive: FileNode,
-    onExtract: (List<ArchiveEntryItem>, Boolean) -> Unit,
+    onExtract: (List<ArchiveEntryItem>, Boolean, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val entries = remember(archive.id) {
+    val entries = remember(archive.id, archive.archiveEntries) {
         archive.archiveEntries ?: listOf(
             ArchiveEntryItem("noi_dung.txt", "1,4 KB"),
             ArchiveEntryItem("cau_hinh.json", "900 B")
@@ -659,7 +666,9 @@ private fun ArchiveViewerDialog(
     }
     var filterText by remember { mutableStateOf("") }
     var intoSubfolder by remember { mutableStateOf(true) }
-    var selectedNames by remember(archive.id) { mutableStateOf(entries.map { it.name }.toSet()) }
+    var selectedNames by remember(archive.id, entries) {
+        mutableStateOf(entries.map { it.name }.toSet())
+    }
 
     val shown = entries.filter { filterText.isBlank() || it.name.contains(filterText, ignoreCase = true) }
 
@@ -669,10 +678,12 @@ private fun ArchiveViewerDialog(
         onDismiss = onDismiss,
         footer = {
             OutlinedButton(onClick = {
-                onExtract(entries.filter { it.name in selectedNames }, intoSubfolder)
+                onExtract(entries.filter { it.name in selectedNames }, intoSubfolder, false)
             }) { Text("Giải nén mục chọn") }
             Spacer(Modifier.width(6.dp))
-            Button(onClick = { onExtract(entries, intoSubfolder) }) { Text("Giải nén tất cả") }
+            Button(onClick = {
+                onExtract(entries, intoSubfolder, true)
+            }) { Text("Giải nén tất cả") }
         }
     ) {
         OutlinedTextField(
