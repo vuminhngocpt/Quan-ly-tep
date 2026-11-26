@@ -231,7 +231,7 @@ data class AppSettings(
     val autoReconnect: Boolean = true,
     val confirmDelete: Boolean = true,
     val searchCache: Boolean = true,
-    val useRealDeviceStorage: Boolean = false
+    val useRealDeviceStorage: Boolean = true
 )
 
 val ARCHIVE_EXTS = setOf("zip", "tar", "tar.gz", "tgz", "gz", "7z", "rar")
