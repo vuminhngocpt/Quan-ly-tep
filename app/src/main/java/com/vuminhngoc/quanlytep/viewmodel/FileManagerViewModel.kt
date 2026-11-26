@@ -111,13 +111,31 @@ class FileManagerViewModel {
         uiState.settings.useRealDeviceStorage &&
             uiState.source in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)
 
+    private fun resolveRealStoragePath(source: StorageSource, fallbackPath: String): String {
+        if (File(fallbackPath).exists()) return fallbackPath
+
+        val storageRoot = File("/storage")
+        val mountedVolumes = storageRoot.listFiles()?.filter { dir ->
+            dir.isDirectory &&
+                dir.name !in setOf("emulated", "self", "sdcard0") &&
+                Regex("""^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$""").matches(dir.name)
+        }.orEmpty()
+
+        return when (source) {
+            StorageSource.SD -> mountedVolumes.firstOrNull()?.absolutePath ?: fallbackPath
+            StorageSource.OTG -> mountedVolumes.getOrNull(1)?.absolutePath ?: fallbackPath
+            else -> fallbackPath
+        }
+    }
+
     fun refreshRealStorageMetadata(targetSource: StorageSource = uiState.source) {
         if (!uiState.settings.useRealDeviceStorage) return
         if (targetSource !in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) return
 
         val baseMeta = uiState.storageMeta[targetSource]
             ?: SeedDataRepository.defaultMetadataMap().getValue(targetSource)
-        val dir = File(baseMeta.path)
+        val resolvedPath = resolveRealStoragePath(targetSource, baseMeta.path)
+        val dir = File(resolvedPath)
         if (!dir.exists()) return
 
         try {
@@ -126,6 +144,7 @@ class FileManagerViewModel {
             val available = stat.availableBytes
             if (total > 0L && available in 0L..total) {
                 val updated = baseMeta.copy(
+                    path = resolvedPath,
                     usedBytes = total - available,
                     totalBytes = total
                 )
