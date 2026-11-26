@@ -148,6 +148,13 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
     }
 
+    private fun buildPathFromParts(source: StorageSource, stack: List<FolderStep>): String {
+        val meta = uiState.storageMeta[source] ?: SeedDataRepository.defaultMetadataMap(appContext).getValue(source)
+        val root = resolveRealStoragePath(source, meta.path).trimEnd('/')
+        if (stack.isEmpty()) return root
+        return "$root/${stack.joinToString("/") { it.name }}"
+    }
+
     fun refreshRealStorageMetadata(targetSource: StorageSource = uiState.source) {
         if (!uiState.settings.useRealDeviceStorage) return
         if (targetSource !in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) return
@@ -248,18 +255,41 @@ class FileManagerViewModel(private val appContext: Context? = null) {
 
     private fun resolveArchiveFile(item: FileNode): File? {
         val candidates = mutableListOf<File>()
-        item.realFilePath?.takeIf { it.isNotBlank() }?.let { candidates.add(File(it)) }
-        candidates.add(File(uiState.currentPath(), item.name))
+        item.realFilePath?.takeIf { it.isNotBlank() }?.let { rawPath ->
+            candidates.add(File(rawPath))
+            if (rawPath.startsWith("/sdcard/")) {
+                candidates.add(File(rawPath.replaceFirst("/sdcard/", "/storage/emulated/0/")))
+            }
+        }
+
+        val curDir = File(uiState.currentPath())
+        candidates.add(File(curDir, item.name))
+
+        uiState.storageMeta[uiState.source]?.path?.takeIf { it.isNotBlank() }?.let { metaRoot ->
+            candidates.add(File(metaRoot, item.name))
+        }
 
         candidates.firstOrNull { it.exists() && it.isFile }?.let { return it }
 
-        val dir = File(uiState.currentPath())
-        if (dir.exists() && dir.isDirectory) {
-            dir.listFiles()?.firstOrNull { child ->
-                child.isFile && child.name.equals(item.name, ignoreCase = true)
+        fun findInDir(dir: File, maxDepth: Int): File? {
+            if (!dir.exists() || !dir.isDirectory || maxDepth < 0) return null
+            val children = dir.listFiles() ?: return null
+            children.firstOrNull { f ->
+                f.isFile && f.name.equals(item.name, ignoreCase = true)
             }?.let { return it }
+            if (maxDepth == 0) return null
+            for (sub in children) {
+                if (sub.isDirectory) {
+                    findInDir(sub, maxDepth - 1)?.let { return it }
+                }
+            }
+            return null
         }
-        return null
+
+        findInDir(curDir, maxDepth = 1)?.let { return it }
+
+        val rootPath = resolveRealStoragePath(uiState.source, uiState.currentMetadata().path)
+        return findInDir(File(rootPath), maxDepth = 2)
     }
 
     private fun isTarGzipName(name: String): Boolean {
@@ -600,6 +630,135 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             showToast("Bộ nhớ tạm trống. Hãy chọn mục và nhấn Sao chép hoặc Di chuyển.")
             return
         }
+
+        if (isRealLocalSource()) {
+            val destDir = File(uiState.currentPath())
+            if (!destDir.exists()) {
+                destDir.mkdirs()
+            }
+            if (!destDir.exists() || !destDir.canWrite()) {
+                showToast("Không có quyền ghi vào thư mục đích (${destDir.absolutePath}).")
+                return
+            }
+
+            val existingNames = (destDir.list()?.map { it.lowercase(Locale.ROOT) } ?: emptyList())
+                .toMutableSet()
+            val originBasePath = buildPathFromParts(clip.fromSource, clip.fromStack)
+            val isMove = clip.mode == ClipboardMode.MOVE
+
+            uiState = uiState.copy(
+                longPressTarget = null,
+                toastMessage = if (isMove) {
+                    "Đang di chuyển ${clip.items.size} mục..."
+                } else {
+                    "Đang sao chép ${clip.items.size} mục..."
+                }
+            )
+
+            Thread {
+                var successCount = 0
+                var failCount = 0
+
+                fun uniqueRealName(desired: String, isFolder: Boolean): String {
+                    if (desired.lowercase(Locale.ROOT) !in existingNames) {
+                        existingNames.add(desired.lowercase(Locale.ROOT))
+                        return desired
+                    }
+                    if (isFolder) {
+                        var idx = 1
+                        while ("$desired ($idx)".lowercase(Locale.ROOT) in existingNames) idx++
+                        val out = "$desired ($idx)"
+                        existingNames.add(out.lowercase(Locale.ROOT))
+                        return out
+                    }
+                    val match = Regex("""(\.tar\.gz|\.[^.]+)$""", RegexOption.IGNORE_CASE).find(desired)
+                    return if (match != null) {
+                        val ext = match.value
+                        val stem = desired.removeSuffix(ext)
+                        var idx = 1
+                        while ("$stem ($idx)$ext".lowercase(Locale.ROOT) in existingNames) idx++
+                        val out = "$stem ($idx)$ext"
+                        existingNames.add(out.lowercase(Locale.ROOT))
+                        out
+                    } else {
+                        var idx = 1
+                        while ("$desired ($idx)".lowercase(Locale.ROOT) in existingNames) idx++
+                        val out = "$desired ($idx)"
+                        existingNames.add(out.lowercase(Locale.ROOT))
+                        out
+                    }
+                }
+
+                fun copyFileOrDir(src: File, dst: File): Boolean {
+                    if (!src.exists()) return false
+                    if (src.isDirectory) {
+                        if (!dst.exists() && !dst.mkdirs()) return false
+                        val children = src.listFiles() ?: return true
+                        for (child in children) {
+                            if (!copyFileOrDir(child, File(dst, child.name))) {
+                                return false
+                            }
+                        }
+                        return true
+                    } else {
+                        dst.parentFile?.mkdirs()
+                        BufferedInputStream(FileInputStream(src)).use { input ->
+                            BufferedOutputStream(FileOutputStream(dst)).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        return dst.exists()
+                    }
+                }
+
+                for (node in clip.items) {
+                    val srcFile = File(node.realFilePath ?: "$originBasePath/${node.name}")
+                    if (!srcFile.exists()) {
+                        failCount++
+                        continue
+                    }
+                    val finalName = uniqueRealName(node.name, srcFile.isDirectory)
+                    val dstFile = File(destDir, finalName)
+                    val copied = runCatching { copyFileOrDir(srcFile, dstFile) }.getOrDefault(false)
+                    if (copied) {
+                        if (isMove) {
+                            val deletedSrc = runCatching { srcFile.deleteRecursively() }.getOrDefault(false)
+                            if (deletedSrc) {
+                                successCount++
+                            } else {
+                                failCount++
+                            }
+                        } else {
+                            successCount++
+                        }
+                    } else {
+                        runCatching { if (dstFile.exists()) dstFile.deleteRecursively() }
+                        failCount++
+                    }
+                }
+
+                val msg = when {
+                    successCount > 0 && failCount == 0 && isMove ->
+                        "Đã di chuyển $successCount mục sang \"${destDir.name}\"."
+                    successCount > 0 && failCount == 0 ->
+                        "Đã sao chép $successCount mục sang \"${destDir.name}\"."
+                    successCount > 0 ->
+                        "Hoàn tất $successCount mục, lỗi $failCount mục (kiểm tra quyền bộ nhớ)."
+                    else ->
+                        "Không thể ghi tệp vào thư mục đích. Kiểm tra quyền Quản lý tất cả tệp."
+                }
+
+                mainHandler.post {
+                    uiState = uiState.copy(
+                        clipboard = if (isMove && successCount > 0) null else clip,
+                        toastMessage = msg
+                    )
+                    refreshRealStorageMetadata(uiState.source)
+                }
+            }.start()
+            return
+        }
+
         val targetList = uiState.currentRawItems().toMutableList()
         val inserted = mutableListOf<FileNode>()
 
@@ -978,6 +1137,10 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 showToast("Không thể ghi tệp nén vào thư mục hiện tại.")
                 return
             }
+            if (!ext.equals("zip", ignoreCase = true)) {
+                showToast("Định dạng .$ext chưa hỗ trợ ghi trực tiếp trên bộ nhớ thật, hãy chọn .zip.")
+                return
+            }
             val existingNames = (targetDir.list()?.map { it.lowercase(Locale.ROOT) } ?: emptyList()).toSet()
             var finalFileName = "$cleanBase.$ext"
             var idx = 1
@@ -986,9 +1149,17 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 idx++
             }
             val outFile = File(targetDir, finalFileName)
+            val basePath = uiState.currentPath()
 
-            val created = runCatching {
-                if (ext.equals("zip", ignoreCase = true)) {
+            uiState = uiState.copy(
+                showCompressModal = false,
+                selectedIds = emptySet(),
+                selectMode = false,
+                toastMessage = "Đang nén thành \"$finalFileName\"..."
+            )
+
+            Thread {
+                val created = runCatching {
                     ZipOutputStream(BufferedOutputStream(FileOutputStream(outFile))).use { zos ->
                         fun addToZip(src: File, entryPrefix: String) {
                             if (!src.exists()) return
@@ -1006,30 +1177,24 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             }
                         }
                         for (node in chosen) {
-                            val srcFile = File(node.realFilePath ?: "${uiState.currentPath()}/${node.name}")
+                            val srcFile = File(node.realFilePath ?: "$basePath/${node.name}")
                             if (srcFile.exists()) {
                                 addToZip(srcFile, srcFile.name)
                             }
                         }
                     }
                     outFile.exists()
-                } else {
-                    false
-                }
-            }.getOrDefault(false)
+                }.getOrDefault(false)
 
-            uiState = uiState.copy(
-                showCompressModal = false,
-                selectedIds = emptySet(),
-                selectMode = false,
-                toastMessage = if (created) {
+                val msg = if (created) {
                     "Đã nén thành \"$finalFileName\"."
-                } else if (!ext.equals("zip", ignoreCase = true)) {
-                    "Định dạng .$ext chưa hỗ trợ ghi trực tiếp trên bộ nhớ thật, hãy chọn .zip."
                 } else {
                     "Nén thất bại. Kiểm tra quyền bộ nhớ hoặc dung lượng trống."
                 }
-            )
+                mainHandler.post {
+                    uiState = uiState.copy(toastMessage = msg)
+                }
+            }.start()
             return
         }
 
