@@ -1,5 +1,6 @@
 package com.vuminhngoc.quanlytep.data
 
+import android.content.Context
 import android.os.Environment
 import android.os.StatFs
 import com.vuminhngoc.quanlytep.model.*
@@ -25,21 +26,42 @@ object SeedDataRepository {
             .orEmpty()
     }
 
-    fun resolveSourcePath(source: StorageSource): String {
+    fun resolveRemovableStoragePath(context: Context, index: Int = 0): String? {
+        val dirs = runCatching { context.getExternalFilesDirs(null) }.getOrNull().orEmpty()
+        val externalRoots = dirs.drop(1).filterNotNull().mapNotNull { appDir ->
+            val fullPath = appDir.absolutePath
+            val marker = "/Android/data/"
+            val cutIdx = fullPath.indexOf(marker)
+            val rootPath = if (cutIdx > 0) fullPath.substring(0, cutIdx) else fullPath
+            File(rootPath).takeIf { it.exists() }
+        }
+        if (index in externalRoots.indices) {
+            return externalRoots[index].absolutePath
+        }
+        return findMountedRemovableVolumes().getOrNull(index)?.absolutePath
+    }
+
+    fun resolveSourcePath(source: StorageSource, context: Context? = null): String {
         return when (source) {
             StorageSource.DEVICE -> {
                 val primary = runCatching { Environment.getExternalStorageDirectory().absolutePath }.getOrNull()
                 if (!primary.isNullOrBlank() && File(primary).exists()) primary else source.defaultPath
             }
             StorageSource.SD -> {
-                if (File(source.defaultPath).exists()) {
+                if (context != null) {
+                    resolveRemovableStoragePath(context, 0)
+                        ?: if (File(source.defaultPath).exists()) source.defaultPath else source.defaultPath
+                } else if (File(source.defaultPath).exists()) {
                     source.defaultPath
                 } else {
                     findMountedRemovableVolumes().firstOrNull()?.absolutePath ?: source.defaultPath
                 }
             }
             StorageSource.OTG -> {
-                if (File(source.defaultPath).exists()) {
+                if (context != null) {
+                    resolveRemovableStoragePath(context, 1)
+                        ?: if (File(source.defaultPath).exists()) source.defaultPath else source.defaultPath
+                } else if (File(source.defaultPath).exists()) {
                     source.defaultPath
                 } else {
                     findMountedRemovableVolumes().getOrNull(1)?.absolutePath ?: source.defaultPath
@@ -49,11 +71,11 @@ object SeedDataRepository {
         }
     }
 
-    fun defaultMetadataMap(): Map<StorageSource, StorageMetadata> {
+    fun defaultMetadataMap(context: Context? = null): Map<StorageSource, StorageMetadata> {
         return StorageSource.entries.associateWith { src ->
             var used = src.defaultUsedBytes
             var total = src.defaultTotalBytes
-            val resolvedPath = resolveSourcePath(src)
+            val resolvedPath = resolveSourcePath(src, context)
 
             if (src in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) {
                 val dir = File(resolvedPath)
