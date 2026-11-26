@@ -1,6 +1,8 @@
 package com.vuminhngoc.quanlytep.viewmodel
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.StatFs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -110,6 +112,8 @@ data class FileManagerUiState(
 class FileManagerViewModel(private val appContext: Context? = null) {
     var uiState by mutableStateOf(FileManagerUiState())
         private set
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
         refreshRealStorageMetadata(StorageSource.DEVICE)
@@ -239,13 +243,13 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         )
     }
 
-    private fun readZipEntries(zipFile: File): List<ArchiveEntryItem> {
+    private fun readZipEntries(zipFile: File, maxEntries: Int = 500): List<ArchiveEntryItem> {
         if (!zipFile.exists() || !zipFile.isFile) return emptyList()
         return runCatching {
             val result = mutableListOf<ArchiveEntryItem>()
             ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->
                 var entry = zis.nextEntry
-                while (entry != null) {
+                while (entry != null && result.size < maxEntries) {
                     val cleanName = entry.name.replace('\\', '/').trim('/')
                     if (cleanName.isNotEmpty()) {
                         val sizeText = if (entry.isDirectory) {
@@ -290,13 +294,31 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
             ItemKind.ARCHIVE -> {
                 val realZipPath = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
-                val targetItem = if (isRealLocalSource() && item.name.endsWith(".zip", ignoreCase = true)) {
-                    val realEntries = readZipEntries(File(realZipPath))
-                    if (realEntries.isNotEmpty()) item.copy(archiveEntries = realEntries) else item
+                val zipFile = File(realZipPath)
+                if (isRealLocalSource() && item.name.endsWith(".zip", ignoreCase = true) && zipFile.exists()) {
+                    uiState = uiState.copy(
+                        archiveModalTarget = item,
+                        toastMessage = "Đang đọc nội dung tệp nén..."
+                    )
+                    Thread {
+                        val realEntries = readZipEntries(zipFile)
+                        val updatedItem = if (realEntries.isNotEmpty()) {
+                            item.copy(archiveEntries = realEntries)
+                        } else {
+                            item
+                        }
+                        mainHandler.post {
+                            if (uiState.archiveModalTarget?.id == item.id) {
+                                uiState = uiState.copy(
+                                    archiveModalTarget = updatedItem,
+                                    toastMessage = null
+                                )
+                            }
+                        }
+                    }.start()
                 } else {
-                    item
+                    uiState = uiState.copy(archiveModalTarget = item)
                 }
-                uiState = uiState.copy(archiveModalTarget = targetItem)
             }
             ItemKind.DOC -> uiState = uiState.copy(docModalTarget = item)
             ItemKind.IMAGE, ItemKind.VIDEO, ItemKind.AUDIO -> uiState = uiState.copy(mediaModalTarget = item)
@@ -601,43 +623,46 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
 
             val selectedNames = entries.map { it.name.replace('\\', '/').trim('/') }.toSet()
-            var extractedCount = 0
-
-            val ok = runCatching {
-                ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
-                    var entry = zis.nextEntry
-                    while (entry != null) {
-                        val cleanEntryName = entry.name.replace('\\', '/').trim('/')
-                        val matchesSelection = cleanEntryName in selectedNames ||
-                            selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
-
-                        if (cleanEntryName.isNotEmpty() && matchesSelection) {
-                            val outFile = File(baseDir, cleanEntryName)
-                            val canonicalBase = baseDir.canonicalPath
-                            val canonicalOut = outFile.canonicalPath
-                            if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
-                                if (entry.isDirectory) {
-                                    outFile.mkdirs()
-                                    extractedCount++
-                                } else {
-                                    outFile.parentFile?.mkdirs()
-                                    BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
-                                        zis.copyTo(bos)
-                                    }
-                                    extractedCount++
-                                }
-                            }
-                        }
-                        zis.closeEntry()
-                        entry = zis.nextEntry
-                    }
-                }
-                extractedCount > 0
-            }.getOrDefault(false)
-
             uiState = uiState.copy(
                 archiveModalTarget = null,
-                toastMessage = if (ok) {
+                toastMessage = "Đang giải nén \"${archive.name}\"..."
+            )
+
+            Thread {
+                var extractedCount = 0
+                val ok = runCatching {
+                    ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
+                        var entry = zis.nextEntry
+                        while (entry != null) {
+                            val cleanEntryName = entry.name.replace('\\', '/').trim('/')
+                            val matchesSelection = cleanEntryName in selectedNames ||
+                                selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+
+                            if (cleanEntryName.isNotEmpty() && matchesSelection) {
+                                val outFile = File(baseDir, cleanEntryName)
+                                val canonicalBase = baseDir.canonicalPath
+                                val canonicalOut = outFile.canonicalPath
+                                if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
+                                    if (entry.isDirectory) {
+                                        outFile.mkdirs()
+                                        extractedCount++
+                                    } else {
+                                        outFile.parentFile?.mkdirs()
+                                        BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
+                                            zis.copyTo(bos)
+                                        }
+                                        extractedCount++
+                                    }
+                                }
+                            }
+                            zis.closeEntry()
+                            entry = zis.nextEntry
+                        }
+                    }
+                    extractedCount > 0
+                }.getOrDefault(false)
+
+                val resultMsg = if (ok) {
                     if (intoSubfolder) {
                         "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\"."
                     } else {
@@ -646,7 +671,11 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 } else {
                     "Không giải nén được tệp này. Kiểm tra nội dung ZIP hoặc quyền bộ nhớ."
                 }
-            )
+
+                mainHandler.post {
+                    uiState = uiState.copy(toastMessage = resultMsg)
+                }
+            }.start()
             return
         }
 
