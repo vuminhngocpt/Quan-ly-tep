@@ -1,5 +1,7 @@
  ## Ứng Dụng Quản Lý Tệp Cho Android
   - dự án đang phát triển **
+ ## Tình Trạng 
+  - 26/11/2026 đã thêm quyền quản lý bộ nhớ và thẻ nhớ
  ## Tải Về 
   - tệp apk hiện chưa có cho người dùng chỉ có bản dew chưa hoàn thiện để test mọi tính năng đều chưa hoạt động
  ## Hãy Hỗ Trợ Tôi Hoàn Thiện Dự Án Này 
