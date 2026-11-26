@@ -365,7 +365,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     private fun extractTarFile(
         tarFile: File,
         baseDir: File,
-        selectedNames: Set<String>
+        selectedNames: Set<String>,
+        extractAll: Boolean = false
     ): Int {
         var extractedCount = 0
         val header = ByteArray(512)
@@ -388,7 +389,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 val paddedBytes = dataBlocks * 512L
 
                 val matchesSelection = cleanEntryName.isNotEmpty() && (
-                    cleanEntryName in selectedNames ||
+                    extractAll ||
+                        cleanEntryName in selectedNames ||
                         selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
                     )
 
@@ -740,8 +742,19 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         uiState = uiState.copy(archiveModalTarget = null)
     }
 
-    fun extractArchive(archive: FileNode, entries: List<ArchiveEntryItem>, intoSubfolder: Boolean) {
-        if (entries.isEmpty()) {
+    fun extractArchive(
+        archive: FileNode,
+        entries: List<ArchiveEntryItem>,
+        intoSubfolder: Boolean,
+        extractAll: Boolean = false
+    ) {
+        val effectiveEntries = if (extractAll && archive.archiveEntries.isNotEmpty()) {
+            archive.archiveEntries
+        } else {
+            entries
+        }
+
+        if (!extractAll && effectiveEntries.isEmpty()) {
             showToast("Vui lòng chọn ít nhất một mục để giải nén.")
             return
         }
@@ -783,7 +796,12 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 return
             }
 
-            val selectedNames = entries.map { it.name.replace('\\', '/').trim('/') }.toSet()
+            val selectedNames = if (extractAll) {
+                emptySet()
+            } else {
+                effectiveEntries.map { it.name.replace('\\', '/').trim('/') }.toSet()
+            }
+
             uiState = uiState.copy(
                 archiveModalTarget = null,
                 toastMessage = "Đang giải nén \"${archive.name}\"..."
@@ -797,10 +815,13 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             var entry = zis.nextEntry
                             while (entry != null) {
                                 val cleanEntryName = entry.name.replace('\\', '/').trim('/')
-                                val matchesSelection = cleanEntryName in selectedNames ||
-                                    selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+                                val matchesSelection = cleanEntryName.isNotEmpty() && (
+                                    extractAll ||
+                                        cleanEntryName in selectedNames ||
+                                        selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+                                    )
 
-                                if (cleanEntryName.isNotEmpty() && matchesSelection) {
+                                if (matchesSelection) {
                                     val outFile = File(baseDir, cleanEntryName)
                                     val canonicalBase = baseDir.canonicalPath
                                     val canonicalOut = outFile.canonicalPath
@@ -822,7 +843,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             }
                         }
                     } else {
-                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames)
+                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames, extractAll)
                     }
                     extractedCount > 0
                 }.getOrDefault(false)
@@ -845,7 +866,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
 
         val currentList = uiState.currentRawItems().toMutableList()
-        val extractedNodes = entries.map { en ->
+        val extractedNodes = effectiveEntries.map { en ->
             FileNode(
                 name = en.name.substringAfterLast('/').ifBlank { "tep_giai_nen.txt" },
                 isFolder = en.isFolder,
