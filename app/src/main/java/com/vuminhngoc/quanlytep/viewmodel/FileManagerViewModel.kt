@@ -1,5 +1,6 @@
 package com.vuminhngoc.quanlytep.viewmodel
 
+import android.content.Context
 import android.os.StatFs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,12 +100,13 @@ data class FileManagerUiState(
     }
 }
 
-class FileManagerViewModel {
+class FileManagerViewModel(private val appContext: Context? = null) {
     var uiState by mutableStateOf(FileManagerUiState())
         private set
 
     init {
         refreshRealStorageMetadata(StorageSource.DEVICE)
+        refreshRealStorageMetadata(StorageSource.SD)
     }
 
     private fun isRealLocalSource(): Boolean =
@@ -112,6 +114,10 @@ class FileManagerViewModel {
             uiState.source in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)
 
     private fun resolveRealStoragePath(source: StorageSource, fallbackPath: String): String {
+        val resolvedByRepo = SeedDataRepository.resolveSourcePath(source, appContext)
+        if (resolvedByRepo.isNotBlank() && File(resolvedByRepo).exists()) {
+            return resolvedByRepo
+        }
         if (File(fallbackPath).exists()) return fallbackPath
 
         val storageRoot = File("/storage")
@@ -133,7 +139,7 @@ class FileManagerViewModel {
         if (targetSource !in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) return
 
         val baseMeta = uiState.storageMeta[targetSource]
-            ?: SeedDataRepository.defaultMetadataMap().getValue(targetSource)
+            ?: SeedDataRepository.defaultMetadataMap(appContext).getValue(targetSource)
         val resolvedPath = resolveRealStoragePath(targetSource, baseMeta.path)
         val dir = File(resolvedPath)
         if (!dir.exists()) return
@@ -668,7 +674,7 @@ class FileManagerViewModel {
         user: String,
         encoding: String
     ) {
-        val base = uiState.storageMeta[source] ?: SeedDataRepository.defaultMetadataMap().getValue(source)
+        val base = uiState.storageMeta[source] ?: SeedDataRepository.defaultMetadataMap(appContext).getValue(source)
         val finalHost = host.trim().ifBlank { source.defaultHost }
         val finalPath = path.trim().ifBlank { source.defaultPath }
         val finalPort = port.trim().ifBlank { source.defaultPort }
