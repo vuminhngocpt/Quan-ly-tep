@@ -436,7 +436,10 @@ class FileManagerViewModel {
         }
 
         if (intoSubfolder) {
-            val baseName = archive.name.replace(Regex("\.(tar\.gz|zip|tar|tgz|7z|rar)$", RegexOption.IGNORE_CASE), "") + "_giai_nen"
+            val baseName = archive.name.replace(
+                Regex("""\.(tar\.gz|zip|tar|tgz|7z|rar)$""", RegexOption.IGNORE_CASE),
+                ""
+            ) + "_giai_nen"
             val folderName = deduplicateName(baseName, true, currentList)
             currentList.add(0, FileNode(name = folderName, isFolder = true, children = extractedNodes))
         } else {
@@ -477,7 +480,7 @@ class FileManagerViewModel {
             return
         }
         val cleanBase = baseNameInput.trim()
-            .replace(Regex("\.(tar\.gz|zip|tar|tgz|7z|rar)$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\.(tar\.gz|zip|tar|tgz|7z|rar)$""", RegexOption.IGNORE_CASE), "")
             .ifBlank { "luu_tru_${uiState.source.id}" }
         val fileName = deduplicateName("$cleanBase.$ext", false, cur)
         val archiveNode = FileNode(
@@ -657,7 +660,7 @@ class FileManagerViewModel {
             while ("$desired ($idx)".lowercase(Locale.ROOT) in used) idx++
             return "$desired ($idx)"
         }
-        val match = Regex("(\.tar\.gz|\.[^.]+)$", RegexOption.IGNORE_CASE).find(desired)
+        val match = Regex("""(\.tar\.gz|\.[^.]+)$""", RegexOption.IGNORE_CASE).find(desired)
         if (match != null) {
             val ext = match.value
             val stem = desired.removeSuffix(ext)
