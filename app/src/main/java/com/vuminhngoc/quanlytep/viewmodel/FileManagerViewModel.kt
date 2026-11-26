@@ -7,8 +7,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.vuminhngoc.quanlytep.data.SeedDataRepository
 import com.vuminhngoc.quanlytep.model.*
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 data class FileManagerUiState(
     val source: StorageSource = StorageSource.DEVICE,
@@ -574,6 +578,68 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         val cleanBase = baseNameInput.trim()
             .replace(Regex("""\.(tar\.gz|zip|tar|tgz|7z|rar)$""", RegexOption.IGNORE_CASE), "")
             .ifBlank { "luu_tru_${uiState.source.id}" }
+
+        if (isRealLocalSource()) {
+            val targetDir = File(uiState.currentPath())
+            if (!targetDir.exists() || !targetDir.canWrite()) {
+                showToast("Không thể ghi tệp nén vào thư mục hiện tại.")
+                return
+            }
+            val existingNames = (targetDir.list()?.map { it.lowercase(Locale.ROOT) } ?: emptyList()).toSet()
+            var finalFileName = "$cleanBase.$ext"
+            var idx = 1
+            while (finalFileName.lowercase(Locale.ROOT) in existingNames) {
+                finalFileName = "$cleanBase ($idx).$ext"
+                idx++
+            }
+            val outFile = File(targetDir, finalFileName)
+
+            val created = runCatching {
+                if (ext.equals("zip", ignoreCase = true)) {
+                    ZipOutputStream(BufferedOutputStream(FileOutputStream(outFile))).use { zos ->
+                        fun addToZip(src: File, entryPrefix: String) {
+                            if (!src.exists()) return
+                            if (src.isDirectory) {
+                                val dirEntryName = if (entryPrefix.endsWith("/")) entryPrefix else "$entryPrefix/"
+                                zos.putNextEntry(ZipEntry(dirEntryName))
+                                zos.closeEntry()
+                                src.listFiles()?.forEach { child ->
+                                    addToZip(child, "$dirEntryName${child.name}")
+                                }
+                            } else {
+                                zos.putNextEntry(ZipEntry(entryPrefix))
+                                src.inputStream().use { input -> input.copyTo(zos) }
+                                zos.closeEntry()
+                            }
+                        }
+                        for (node in chosen) {
+                            val srcFile = File(node.realFilePath ?: "${uiState.currentPath()}/${node.name}")
+                            if (srcFile.exists()) {
+                                addToZip(srcFile, srcFile.name)
+                            }
+                        }
+                    }
+                    outFile.exists()
+                } else {
+                    false
+                }
+            }.getOrDefault(false)
+
+            uiState = uiState.copy(
+                showCompressModal = false,
+                selectedIds = emptySet(),
+                selectMode = false,
+                toastMessage = if (created) {
+                    "Đã nén thành \"$finalFileName\"."
+                } else if (!ext.equals("zip", ignoreCase = true)) {
+                    "Định dạng .$ext chưa hỗ trợ ghi trực tiếp trên bộ nhớ thật, hãy chọn .zip."
+                } else {
+                    "Nén thất bại. Kiểm tra quyền bộ nhớ hoặc dung lượng trống."
+                }
+            )
+            return
+        }
+
         val fileName = deduplicateName("$cleanBase.$ext", false, cur)
         val archiveNode = FileNode(
             name = fileName,
