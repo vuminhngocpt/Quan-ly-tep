@@ -17,6 +17,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -245,6 +246,32 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         )
     }
 
+    private fun resolveArchiveFile(item: FileNode): File? {
+        val candidates = mutableListOf<File>()
+        item.realFilePath?.takeIf { it.isNotBlank() }?.let { candidates.add(File(it)) }
+        candidates.add(File(uiState.currentPath(), item.name))
+
+        candidates.firstOrNull { it.exists() && it.isFile }?.let { return it }
+
+        val dir = File(uiState.currentPath())
+        if (dir.exists() && dir.isDirectory) {
+            dir.listFiles()?.firstOrNull { child ->
+                child.isFile && child.name.equals(item.name, ignoreCase = true)
+            }?.let { return it }
+        }
+        return null
+    }
+
+    private fun isTarGzipName(name: String): Boolean {
+        val lower = name.lowercase(Locale.ROOT)
+        return lower.endsWith(".tar.gz") || lower.endsWith(".tgz")
+    }
+
+    private fun openTarStream(tarFile: File, isGzip: Boolean): InputStream {
+        val fis = BufferedInputStream(FileInputStream(tarFile))
+        return if (isGzip) BufferedInputStream(GZIPInputStream(fis)) else fis
+    }
+
     private fun readZipEntries(zipFile: File, maxEntries: Int = 500): List<ArchiveEntryItem> {
         if (!zipFile.exists() || !zipFile.isFile) return emptyList()
         return runCatching {
@@ -325,14 +352,14 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
     }
 
-    private fun readTarEntries(tarFile: File, maxEntries: Int = 500): List<ArchiveEntryItem> {
+    private fun readTarEntries(tarFile: File, isGzip: Boolean = false, maxEntries: Int = 500): List<ArchiveEntryItem> {
         if (!tarFile.exists() || !tarFile.isFile) return emptyList()
         return runCatching {
             val result = mutableListOf<ArchiveEntryItem>()
             val header = ByteArray(512)
-            BufferedInputStream(FileInputStream(tarFile)).use { bis ->
+            openTarStream(tarFile, isGzip).use { stream ->
                 while (result.size < maxEntries) {
-                    if (!readFullyBlock(bis, header)) break
+                    if (!readFullyBlock(stream, header)) break
                     if (header.all { it.toInt() == 0 }) break
 
                     val rawName = readCString(header, 0, 100)
@@ -355,7 +382,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                     }
 
                     val dataBlocks = (size + 511L) / 512L
-                    skipBytesExact(bis, dataBlocks * 512L)
+                    skipBytesExact(stream, dataBlocks * 512L)
                 }
             }
             result
@@ -366,15 +393,16 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         tarFile: File,
         baseDir: File,
         selectedNames: Set<String>,
-        extractAll: Boolean = false
+        extractAll: Boolean = false,
+        isGzip: Boolean = false
     ): Int {
         var extractedCount = 0
         val header = ByteArray(512)
         val canonicalBase = baseDir.canonicalPath
 
-        BufferedInputStream(FileInputStream(tarFile)).use { bis ->
+        openTarStream(tarFile, isGzip).use { stream ->
             while (true) {
-                if (!readFullyBlock(bis, header)) break
+                if (!readFullyBlock(stream, header)) break
                 if (header.all { it.toInt() == 0 }) break
 
                 val rawName = readCString(header, 0, 100)
@@ -401,7 +429,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                         if (isDir) {
                             outFile.mkdirs()
                             extractedCount++
-                            skipBytesExact(bis, paddedBytes)
+                            skipBytesExact(stream, paddedBytes)
                         } else {
                             outFile.parentFile?.mkdirs()
                             var left = size
@@ -409,21 +437,21 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
                                 while (left > 0L) {
                                     val toRead = left.coerceAtMost(buf.size.toLong()).toInt()
-                                    val n = bis.read(buf, 0, toRead)
+                                    val n = stream.read(buf, 0, toRead)
                                     if (n <= 0) break
                                     bos.write(buf, 0, n)
                                     left -= n
                                 }
                             }
                             val remainder = paddedBytes - size
-                            if (remainder > 0L) skipBytesExact(bis, remainder)
+                            if (remainder > 0L) skipBytesExact(stream, remainder)
                             extractedCount++
                         }
                     } else {
-                        skipBytesExact(bis, paddedBytes)
+                        skipBytesExact(stream, paddedBytes)
                     }
                 } else {
-                    skipBytesExact(bis, paddedBytes)
+                    skipBytesExact(stream, paddedBytes)
                 }
             }
         }
@@ -448,33 +476,47 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 )
             }
             ItemKind.ARCHIVE -> {
-                val realArchivePath = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
-                val archiveFile = File(realArchivePath)
                 val isZip = item.name.endsWith(".zip", ignoreCase = true)
-                val isTar = item.name.endsWith(".tar", ignoreCase = true)
+                val isGzipTar = isTarGzipName(item.name)
+                val isTar = isGzipTar || item.name.endsWith(".tar", ignoreCase = true)
 
-                if (isRealLocalSource() && (isZip || isTar) && archiveFile.exists()) {
-                    val emptyTarget = item.copy(archiveEntries = emptyList())
-                    uiState = uiState.copy(
-                        archiveModalTarget = emptyTarget,
-                        toastMessage = "Đang đọc nội dung tệp nén..."
-                    )
-                    Thread {
-                        val realEntries = if (isZip) {
-                            readZipEntries(archiveFile)
-                        } else {
-                            readTarEntries(archiveFile)
-                        }
-                        val updatedItem = item.copy(archiveEntries = realEntries)
-                        mainHandler.post {
-                            if (uiState.archiveModalTarget?.id == item.id) {
-                                uiState = uiState.copy(
-                                    archiveModalTarget = updatedItem,
-                                    toastMessage = null
-                                )
+                if (isRealLocalSource() && (isZip || isTar)) {
+                    val archiveFile = resolveArchiveFile(item)
+                    if (archiveFile != null && archiveFile.exists()) {
+                        val syncedItem = item.copy(
+                            realFilePath = archiveFile.absolutePath,
+                            archiveEntries = emptyList()
+                        )
+                        uiState = uiState.copy(
+                            archiveModalTarget = syncedItem,
+                            toastMessage = "Đang đọc nội dung tệp nén..."
+                        )
+                        Thread {
+                            val realEntries = if (isZip) {
+                                readZipEntries(archiveFile)
+                            } else {
+                                readTarEntries(archiveFile, isGzip = isGzipTar)
                             }
-                        }
-                    }.start()
+                            val updatedItem = syncedItem.copy(archiveEntries = realEntries)
+                            mainHandler.post {
+                                if (uiState.archiveModalTarget?.id == item.id) {
+                                    uiState = uiState.copy(
+                                        archiveModalTarget = updatedItem,
+                                        toastMessage = if (realEntries.isEmpty()) {
+                                            "Không đọc được danh sách mục trong tệp nén."
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
+                            }
+                        }.start()
+                    } else {
+                        uiState = uiState.copy(
+                            archiveModalTarget = item.copy(archiveEntries = emptyList()),
+                            toastMessage = "Không tìm thấy tệp trên đường dẫn thực tế."
+                        )
+                    }
                 } else if (isRealLocalSource()) {
                     uiState = uiState.copy(archiveModalTarget = item.copy(archiveEntries = emptyList()))
                 } else {
@@ -761,15 +803,16 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
 
         if (isRealLocalSource()) {
-            val archiveFile = File(archive.realFilePath ?: "${uiState.currentPath()}/${archive.name}")
-            if (!archiveFile.exists()) {
+            val archiveFile = resolveArchiveFile(archive)
+            if (archiveFile == null || !archiveFile.exists()) {
                 showToast("Không tìm thấy tệp nén trên thiết bị.")
                 return
             }
             val isZip = archive.name.endsWith(".zip", ignoreCase = true)
-            val isTar = archive.name.endsWith(".tar", ignoreCase = true)
+            val isGzipTar = isTarGzipName(archive.name)
+            val isTar = isGzipTar || archive.name.endsWith(".tar", ignoreCase = true)
             if (!isZip && !isTar) {
-                showToast("Hiện chỉ hỗ trợ giải nén thật cho định dạng .zip và .tar trên bộ nhớ thiết bị.")
+                showToast("Hiện hỗ trợ giải nén thật cho .zip, .tar, .tar.gz và .tgz trên bộ nhớ thiết bị.")
                 return
             }
 
@@ -793,7 +836,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
 
             if (!baseDir.exists() || !baseDir.canWrite()) {
-                showToast("Không thể ghi dữ liệu giải nén vào thư mục đích.")
+                showToast("Không có quyền ghi vào thư mục đích (${baseDir.absolutePath}).")
                 return
             }
 
@@ -810,7 +853,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
 
             Thread {
                 var extractedCount = 0
-                val ok = runCatching {
+                var errorReason: String? = null
+                val ok = try {
                     if (isZip) {
                         ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
                             var entry = zis.nextEntry
@@ -844,19 +888,22 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             }
                         }
                     } else {
-                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames, extractAll)
+                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames, extractAll, isGzip = isGzipTar)
                     }
                     extractedCount > 0
-                }.getOrDefault(false)
+                } catch (se: SecurityException) {
+                    errorReason = "Bị từ chối quyền ghi bộ nhớ (${se.message ?: "SecurityException"})."
+                    false
+                } catch (e: Exception) {
+                    errorReason = "Lỗi giải nén: ${e.message ?: e.javaClass.simpleName}"
+                    false
+                }
 
-                val resultMsg = if (ok) {
-                    if (intoSubfolder) {
-                        "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\"."
-                    } else {
-                        "Đã giải nén $extractedCount mục vào thư mục hiện tại."
-                    }
-                } else {
-                    "Không giải nén được tệp này. Kiểm tra nội dung lưu trữ hoặc quyền bộ nhớ."
+                val resultMsg = when {
+                    ok && intoSubfolder -> "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\"."
+                    ok -> "Đã giải nén $extractedCount mục vào thư mục hiện tại."
+                    errorReason != null -> errorReason!!
+                    else -> "Không có mục nào được trích xuất (tệp trống hoặc sai cấu trúc lưu trữ)."
                 }
 
                 mainHandler.post {
