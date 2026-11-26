@@ -7,11 +7,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.vuminhngoc.quanlytep.data.SeedDataRepository
 import com.vuminhngoc.quanlytep.model.*
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Locale
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 data class FileManagerUiState(
@@ -236,6 +239,38 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         )
     }
 
+    private fun readZipEntries(zipFile: File): List<ArchiveEntryItem> {
+        if (!zipFile.exists() || !zipFile.isFile) return emptyList()
+        return runCatching {
+            val result = mutableListOf<ArchiveEntryItem>()
+            ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val cleanName = entry.name.replace('\\', '/').trim('/')
+                    if (cleanName.isNotEmpty()) {
+                        val sizeText = if (entry.isDirectory) {
+                            ""
+                        } else if (entry.size >= 0L) {
+                            formatSize(entry.size)
+                        } else {
+                            "Tệp ZIP"
+                        }
+                        result.add(
+                            ArchiveEntryItem(
+                                name = cleanName,
+                                size = sizeText,
+                                isFolder = entry.isDirectory
+                            )
+                        )
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
     fun onItemClick(item: FileNode) {
         if (uiState.selectMode || uiState.selectedIds.isNotEmpty()) {
             toggleSelectId(item.id)
@@ -253,7 +288,16 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                     historyIndex = nextHist.lastIndex
                 )
             }
-            ItemKind.ARCHIVE -> uiState = uiState.copy(archiveModalTarget = item)
+            ItemKind.ARCHIVE -> {
+                val realZipPath = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
+                val targetItem = if (isRealLocalSource() && item.name.endsWith(".zip", ignoreCase = true)) {
+                    val realEntries = readZipEntries(File(realZipPath))
+                    if (realEntries.isNotEmpty()) item.copy(archiveEntries = realEntries) else item
+                } else {
+                    item
+                }
+                uiState = uiState.copy(archiveModalTarget = targetItem)
+            }
             ItemKind.DOC -> uiState = uiState.copy(docModalTarget = item)
             ItemKind.IMAGE, ItemKind.VIDEO, ItemKind.AUDIO -> uiState = uiState.copy(mediaModalTarget = item)
             ItemKind.FILE -> uiState = uiState.copy(infoModalTarget = item)
@@ -520,6 +564,92 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             showToast("Vui lòng chọn ít nhất một mục để giải nén.")
             return
         }
+
+        if (isRealLocalSource()) {
+            val archiveFile = File(archive.realFilePath ?: "${uiState.currentPath()}/${archive.name}")
+            if (!archiveFile.exists()) {
+                showToast("Không tìm thấy tệp nén trên thiết bị.")
+                return
+            }
+            if (!archive.name.endsWith(".zip", ignoreCase = true)) {
+                showToast("Hiện chỉ hỗ trợ giải nén thật cho định dạng .zip trên bộ nhớ thiết bị.")
+                return
+            }
+
+            val parentDir = File(uiState.currentPath())
+            val existingNames = (parentDir.list()?.map { it.lowercase(Locale.ROOT) } ?: emptyList()).toSet()
+            val baseSubName = archive.name.replace(
+                Regex("""\.(tar\.gz|zip|tar|tgz|7z|rar)$""", RegexOption.IGNORE_CASE),
+                ""
+            ) + "_giai_nen"
+            var finalSubName = baseSubName
+            var subIdx = 1
+            while (finalSubName.lowercase(Locale.ROOT) in existingNames) {
+                finalSubName = "$baseSubName ($subIdx)"
+                subIdx++
+            }
+
+            val baseDir = if (intoSubfolder) {
+                File(parentDir, finalSubName).apply { mkdirs() }
+            } else {
+                parentDir
+            }
+
+            if (!baseDir.exists() || !baseDir.canWrite()) {
+                showToast("Không thể ghi dữ liệu giải nén vào thư mục đích.")
+                return
+            }
+
+            val selectedNames = entries.map { it.name.replace('\\', '/').trim('/') }.toSet()
+            var extractedCount = 0
+
+            val ok = runCatching {
+                ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        val cleanEntryName = entry.name.replace('\\', '/').trim('/')
+                        val matchesSelection = cleanEntryName in selectedNames ||
+                            selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+
+                        if (cleanEntryName.isNotEmpty() && matchesSelection) {
+                            val outFile = File(baseDir, cleanEntryName)
+                            val canonicalBase = baseDir.canonicalPath
+                            val canonicalOut = outFile.canonicalPath
+                            if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
+                                if (entry.isDirectory) {
+                                    outFile.mkdirs()
+                                    extractedCount++
+                                } else {
+                                    outFile.parentFile?.mkdirs()
+                                    BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
+                                        zis.copyTo(bos)
+                                    }
+                                    extractedCount++
+                                }
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+                extractedCount > 0
+            }.getOrDefault(false)
+
+            uiState = uiState.copy(
+                archiveModalTarget = null,
+                toastMessage = if (ok) {
+                    if (intoSubfolder) {
+                        "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\"."
+                    } else {
+                        "Đã giải nén $extractedCount mục vào thư mục hiện tại."
+                    }
+                } else {
+                    "Không giải nén được tệp này. Kiểm tra nội dung ZIP hoặc quyền bộ nhớ."
+                }
+            )
+            return
+        }
+
         val currentList = uiState.currentRawItems().toMutableList()
         val extractedNodes = entries.map { en ->
             FileNode(
