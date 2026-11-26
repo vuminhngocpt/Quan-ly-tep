@@ -107,6 +107,10 @@ class FileManagerViewModel {
         refreshRealStorageMetadata(StorageSource.DEVICE)
     }
 
+    private fun isRealLocalSource(): Boolean =
+        uiState.settings.useRealDeviceStorage &&
+            uiState.source in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)
+
     fun refreshRealStorageMetadata(targetSource: StorageSource = uiState.source) {
         if (!uiState.settings.useRealDeviceStorage) return
         if (targetSource !in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) return
@@ -389,9 +393,39 @@ class FileManagerViewModel {
             showToast("Tên không được để trống.")
             return
         }
+        val targetItem = uiState.currentRawItems().find { it.id == targetId }
+        if (targetItem != null && isRealLocalSource()) {
+            val currentPath = targetItem.realFilePath ?: "${uiState.currentPath()}/${targetItem.name}"
+            val oldFile = File(currentPath)
+            if (oldFile.exists() && oldFile.name != trimmed) {
+                val parentDir = oldFile.parentFile ?: File(uiState.currentPath())
+                val newFile = File(parentDir, trimmed)
+                if (newFile.exists()) {
+                    showToast("Đã tồn tại tệp hoặc thư mục tên \"$trimmed\".")
+                    return
+                }
+                if (!oldFile.renameTo(newFile)) {
+                    showToast("Không thể đổi tên tệp trên bộ nhớ thiết bị.")
+                    return
+                }
+            }
+        }
+
         val currentList = uiState.currentRawItems().map { item ->
             if (item.id == targetId) {
-                item.copy(name = trimmed, notes = newNotes.trim(), modified = todayShort())
+                val updatedRealPath = if (isRealLocalSource()) {
+                    val baseReal = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
+                    val parent = File(baseReal).parent
+                    if (parent != null) "$parent/$trimmed" else item.realFilePath
+                } else {
+                    item.realFilePath
+                }
+                item.copy(
+                    name = trimmed,
+                    notes = newNotes.trim(),
+                    modified = todayShort(),
+                    realFilePath = updatedRealPath
+                )
             } else item
         }
         val nextTrees = replaceItemsAt(uiState.trees, uiState.source, uiState.folderStack, currentList)
@@ -558,14 +592,34 @@ class FileManagerViewModel {
     private fun deleteItems(ids: List<String>) {
         if (ids.isEmpty()) return
         val idSet = ids.toSet()
+        var failedCount = 0
+
+        if (isRealLocalSource()) {
+            val targets = uiState.currentRawItems().filter { it.id in idSet }
+            for (item in targets) {
+                val path = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
+                val file = File(path)
+                if (file.exists()) {
+                    val deleted = file.deleteRecursively()
+                    if (!deleted) failedCount++
+                }
+            }
+        }
+
         val kept = uiState.currentRawItems().filterNot { it.id in idSet }
         val nextTrees = replaceItemsAt(uiState.trees, uiState.source, uiState.folderStack, kept)
+        val msg = when {
+            failedCount == 0 -> "Đã xóa ${ids.size} mục."
+            failedCount < ids.size -> "Đã xóa một phần (${ids.size - failedCount}/${ids.size} mục); kiểm tra quyền bộ nhớ."
+            else -> "Không thể xóa tệp trên thiết bị. Hãy cấp quyền Quản lý tất cả tệp."
+        }
+
         uiState = uiState.copy(
             trees = nextTrees,
             pendingDeleteIds = emptyList(),
             selectedIds = emptySet(),
             selectMode = false,
-            toastMessage = "Đã xóa ${ids.size} mục."
+            toastMessage = msg
         )
     }
 
