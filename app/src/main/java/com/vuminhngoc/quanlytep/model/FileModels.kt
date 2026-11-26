@@ -270,7 +270,7 @@ fun formatSize(bytes: Long): String {
 
 fun parseSizeToBytes(sizeStr: String): Long {
     val cleaned = sizeStr.trim().replace(',', '.')
-    val regex = Regex("^([0-9.]+)\s*(B|KB|MB|GB|TB)$", RegexOption.IGNORE_CASE)
+    val regex = Regex("""^([0-9.]+)\s*(B|KB|MB|GB|TB)$""", RegexOption.IGNORE_CASE)
     val match = regex.find(cleaned) ?: return 1024L
     val num = match.groupValues[1].toDoubleOrNull() ?: 1.0
     val mult = when (match.groupValues[2].uppercase(Locale.ROOT)) {
