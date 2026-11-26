@@ -14,6 +14,8 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -275,6 +277,157 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }.getOrDefault(emptyList())
     }
 
+    private fun parseTarOctal(buf: ByteArray, offset: Int, length: Int): Long {
+        var value = 0L
+        var foundDigit = false
+        val end = (offset + length).coerceAtMost(buf.size)
+        for (i in offset until end) {
+            val b = buf[i].toInt() and 0xFF
+            if (b == 0 || b == ' '.code) {
+                if (foundDigit) break
+                continue
+            }
+            if (b in '0'.code..'7'.code) {
+                foundDigit = true
+                value = (value shl 3) + (b - '0'.code)
+            }
+        }
+        return value
+    }
+
+    private fun readCString(buf: ByteArray, offset: Int, length: Int): String {
+        val end = (offset + length).coerceAtMost(buf.size)
+        var len = 0
+        while (offset + len < end && buf[offset + len].toInt() != 0) {
+            len++
+        }
+        return String(buf, offset, len, StandardCharsets.UTF_8).trim()
+    }
+
+    private fun readFullyBlock(input: InputStream, block: ByteArray): Boolean {
+        var total = 0
+        while (total < block.size) {
+            val read = input.read(block, total, block.size - total)
+            if (read <= 0) return false
+            total += read
+        }
+        return true
+    }
+
+    private fun skipBytesExact(input: InputStream, count: Long) {
+        var remaining = count
+        val buf = ByteArray(8192)
+        while (remaining > 0L) {
+            val toRead = remaining.coerceAtMost(buf.size.toLong()).toInt()
+            val n = input.read(buf, 0, toRead)
+            if (n <= 0) break
+            remaining -= n
+        }
+    }
+
+    private fun readTarEntries(tarFile: File, maxEntries: Int = 500): List<ArchiveEntryItem> {
+        if (!tarFile.exists() || !tarFile.isFile) return emptyList()
+        return runCatching {
+            val result = mutableListOf<ArchiveEntryItem>()
+            val header = ByteArray(512)
+            BufferedInputStream(FileInputStream(tarFile)).use { bis ->
+                while (result.size < maxEntries) {
+                    if (!readFullyBlock(bis, header)) break
+                    if (header.all { it.toInt() == 0 }) break
+
+                    val rawName = readCString(header, 0, 100)
+                    val prefix = readCString(header, 345, 155)
+                    val fullName = (if (prefix.isNotEmpty()) "$prefix/$rawName" else rawName)
+                        .replace('\\', '/')
+                        .trim('/')
+                    val size = parseTarOctal(header, 124, 12)
+                    val typeFlag = if (header.size > 156) header[156].toInt() and 0xFF else 0
+                    val isDir = typeFlag == '5'.code || rawName.endsWith("/")
+
+                    if (fullName.isNotEmpty()) {
+                        result.add(
+                            ArchiveEntryItem(
+                                name = fullName,
+                                size = if (isDir) "" else formatSize(size),
+                                isFolder = isDir
+                            )
+                        )
+                    }
+
+                    val dataBlocks = (size + 511L) / 512L
+                    skipBytesExact(bis, dataBlocks * 512L)
+                }
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private fun extractTarFile(
+        tarFile: File,
+        baseDir: File,
+        selectedNames: Set<String>
+    ): Int {
+        var extractedCount = 0
+        val header = ByteArray(512)
+        val canonicalBase = baseDir.canonicalPath
+
+        BufferedInputStream(FileInputStream(tarFile)).use { bis ->
+            while (true) {
+                if (!readFullyBlock(bis, header)) break
+                if (header.all { it.toInt() == 0 }) break
+
+                val rawName = readCString(header, 0, 100)
+                val prefix = readCString(header, 345, 155)
+                val cleanEntryName = (if (prefix.isNotEmpty()) "$prefix/$rawName" else rawName)
+                    .replace('\\', '/')
+                    .trim('/')
+                val size = parseTarOctal(header, 124, 12)
+                val typeFlag = if (header.size > 156) header[156].toInt() and 0xFF else 0
+                val isDir = typeFlag == '5'.code || rawName.endsWith("/")
+                val dataBlocks = (size + 511L) / 512L
+                val paddedBytes = dataBlocks * 512L
+
+                val matchesSelection = cleanEntryName.isNotEmpty() && (
+                    cleanEntryName in selectedNames ||
+                        selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+                    )
+
+                if (matchesSelection) {
+                    val outFile = File(baseDir, cleanEntryName)
+                    val canonicalOut = outFile.canonicalPath
+                    if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
+                        if (isDir) {
+                            outFile.mkdirs()
+                            extractedCount++
+                            skipBytesExact(bis, paddedBytes)
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            var left = size
+                            val buf = ByteArray(8192)
+                            BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
+                                while (left > 0L) {
+                                    val toRead = left.coerceAtMost(buf.size.toLong()).toInt()
+                                    val n = bis.read(buf, 0, toRead)
+                                    if (n <= 0) break
+                                    bos.write(buf, 0, n)
+                                    left -= n
+                                }
+                            }
+                            val remainder = paddedBytes - size
+                            if (remainder > 0L) skipBytesExact(bis, remainder)
+                            extractedCount++
+                        }
+                    } else {
+                        skipBytesExact(bis, paddedBytes)
+                    }
+                } else {
+                    skipBytesExact(bis, paddedBytes)
+                }
+            }
+        }
+        return extractedCount
+    }
+
     fun onItemClick(item: FileNode) {
         if (uiState.selectMode || uiState.selectedIds.isNotEmpty()) {
             toggleSelectId(item.id)
@@ -293,20 +446,24 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 )
             }
             ItemKind.ARCHIVE -> {
-                val realZipPath = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
-                val zipFile = File(realZipPath)
-                if (isRealLocalSource() && item.name.endsWith(".zip", ignoreCase = true) && zipFile.exists()) {
+                val realArchivePath = item.realFilePath ?: "${uiState.currentPath()}/${item.name}"
+                val archiveFile = File(realArchivePath)
+                val isZip = item.name.endsWith(".zip", ignoreCase = true)
+                val isTar = item.name.endsWith(".tar", ignoreCase = true)
+
+                if (isRealLocalSource() && (isZip || isTar) && archiveFile.exists()) {
+                    val emptyTarget = item.copy(archiveEntries = emptyList())
                     uiState = uiState.copy(
-                        archiveModalTarget = item,
+                        archiveModalTarget = emptyTarget,
                         toastMessage = "Đang đọc nội dung tệp nén..."
                     )
                     Thread {
-                        val realEntries = readZipEntries(zipFile)
-                        val updatedItem = if (realEntries.isNotEmpty()) {
-                            item.copy(archiveEntries = realEntries)
+                        val realEntries = if (isZip) {
+                            readZipEntries(archiveFile)
                         } else {
-                            item
+                            readTarEntries(archiveFile)
                         }
+                        val updatedItem = item.copy(archiveEntries = realEntries)
                         mainHandler.post {
                             if (uiState.archiveModalTarget?.id == item.id) {
                                 uiState = uiState.copy(
@@ -316,6 +473,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             }
                         }
                     }.start()
+                } else if (isRealLocalSource()) {
+                    uiState = uiState.copy(archiveModalTarget = item.copy(archiveEntries = emptyList()))
                 } else {
                     uiState = uiState.copy(archiveModalTarget = item)
                 }
@@ -593,8 +752,10 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 showToast("Không tìm thấy tệp nén trên thiết bị.")
                 return
             }
-            if (!archive.name.endsWith(".zip", ignoreCase = true)) {
-                showToast("Hiện chỉ hỗ trợ giải nén thật cho định dạng .zip trên bộ nhớ thiết bị.")
+            val isZip = archive.name.endsWith(".zip", ignoreCase = true)
+            val isTar = archive.name.endsWith(".tar", ignoreCase = true)
+            if (!isZip && !isTar) {
+                showToast("Hiện chỉ hỗ trợ giải nén thật cho định dạng .zip và .tar trên bộ nhớ thiết bị.")
                 return
             }
 
@@ -631,33 +792,37 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             Thread {
                 var extractedCount = 0
                 val ok = runCatching {
-                    ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
-                        var entry = zis.nextEntry
-                        while (entry != null) {
-                            val cleanEntryName = entry.name.replace('\\', '/').trim('/')
-                            val matchesSelection = cleanEntryName in selectedNames ||
-                                selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
+                    if (isZip) {
+                        ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
+                            var entry = zis.nextEntry
+                            while (entry != null) {
+                                val cleanEntryName = entry.name.replace('\\', '/').trim('/')
+                                val matchesSelection = cleanEntryName in selectedNames ||
+                                    selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
 
-                            if (cleanEntryName.isNotEmpty() && matchesSelection) {
-                                val outFile = File(baseDir, cleanEntryName)
-                                val canonicalBase = baseDir.canonicalPath
-                                val canonicalOut = outFile.canonicalPath
-                                if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
-                                    if (entry.isDirectory) {
-                                        outFile.mkdirs()
-                                        extractedCount++
-                                    } else {
-                                        outFile.parentFile?.mkdirs()
-                                        BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
-                                            zis.copyTo(bos)
+                                if (cleanEntryName.isNotEmpty() && matchesSelection) {
+                                    val outFile = File(baseDir, cleanEntryName)
+                                    val canonicalBase = baseDir.canonicalPath
+                                    val canonicalOut = outFile.canonicalPath
+                                    if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
+                                        if (entry.isDirectory) {
+                                            outFile.mkdirs()
+                                            extractedCount++
+                                        } else {
+                                            outFile.parentFile?.mkdirs()
+                                            BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
+                                                zis.copyTo(bos)
+                                            }
+                                            extractedCount++
                                         }
-                                        extractedCount++
                                     }
                                 }
+                                zis.closeEntry()
+                                entry = zis.nextEntry
                             }
-                            zis.closeEntry()
-                            entry = zis.nextEntry
                         }
+                    } else {
+                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames)
                     }
                     extractedCount > 0
                 }.getOrDefault(false)
@@ -669,7 +834,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                         "Đã giải nén $extractedCount mục vào thư mục hiện tại."
                     }
                 } else {
-                    "Không giải nén được tệp này. Kiểm tra nội dung ZIP hoặc quyền bộ nhớ."
+                    "Không giải nén được tệp này. Kiểm tra nội dung lưu trữ hoặc quyền bộ nhớ."
                 }
 
                 mainHandler.post {
