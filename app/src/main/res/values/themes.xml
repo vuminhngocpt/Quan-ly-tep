@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.QuanLyTep" parent="android:Theme.Material.NoActionBar" />
+</resources>
