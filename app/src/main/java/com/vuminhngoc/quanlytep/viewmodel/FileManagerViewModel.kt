@@ -1,5 +1,6 @@
 package com.vuminhngoc.quanlytep.viewmodel
 
+import android.os.StatFs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -102,6 +103,36 @@ class FileManagerViewModel {
     var uiState by mutableStateOf(FileManagerUiState())
         private set
 
+    init {
+        refreshRealStorageMetadata(StorageSource.DEVICE)
+    }
+
+    fun refreshRealStorageMetadata(targetSource: StorageSource = uiState.source) {
+        if (!uiState.settings.useRealDeviceStorage) return
+        if (targetSource !in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) return
+
+        val baseMeta = uiState.storageMeta[targetSource]
+            ?: SeedDataRepository.defaultMetadataMap().getValue(targetSource)
+        val dir = File(baseMeta.path)
+        if (!dir.exists()) return
+
+        try {
+            val stat = StatFs(dir.absolutePath)
+            val total = stat.totalBytes
+            val available = stat.availableBytes
+            if (total > 0L && available in 0L..total) {
+                val updated = baseMeta.copy(
+                    usedBytes = total - available,
+                    totalBytes = total
+                )
+                uiState = uiState.copy(
+                    storageMeta = uiState.storageMeta + (targetSource to updated)
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     fun showToast(msg: String) {
         uiState = uiState.copy(toastMessage = msg)
     }
@@ -125,6 +156,7 @@ class FileManagerViewModel {
             history = baseHist,
             historyIndex = baseHist.lastIndex
         )
+        refreshRealStorageMetadata(source)
     }
 
     fun goHistory(delta: Int) {
