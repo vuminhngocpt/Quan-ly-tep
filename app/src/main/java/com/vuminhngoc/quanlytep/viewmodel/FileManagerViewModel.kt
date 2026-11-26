@@ -193,6 +193,7 @@ class FileManagerViewModel {
             selectedIds = emptySet(),
             selectMode = false
         )
+        refreshRealStorageMetadata(entry.source)
     }
 
     fun navigateCrumb(index: Int) {
@@ -704,6 +705,9 @@ class FileManagerViewModel {
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         uiState = uiState.copy(settings = transform(uiState.settings))
+        if (uiState.settings.useRealDeviceStorage) {
+            refreshRealStorageMetadata(uiState.source)
+        }
     }
 
     fun restoreDemoData() {
