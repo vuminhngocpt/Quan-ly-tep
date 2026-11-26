@@ -11,10 +11,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.vuminhngoc.quanlytep.model.StorageSource
 import com.vuminhngoc.quanlytep.ui.FileManagerScreen
 import com.vuminhngoc.quanlytep.ui.theme.QuanLyTepTheme
@@ -27,12 +28,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestAllFilesAccessIfNeeded()
+        val appContext = applicationContext
 
         setContent {
-            val viewModel = remember { FileManagerViewModel() }
+            val viewModel = remember(appContext) { FileManagerViewModel(appContext) }
             val state = viewModel.uiState
             val lifecycleOwner = LocalLifecycleOwner.current
+
+            LaunchedEffect(Unit) {
+                requestAllFilesAccessIfNeeded()
+            }
 
             DisposableEffect(lifecycleOwner) {
                 viewModel.refreshRealStorageMetadata(StorageSource.DEVICE)
