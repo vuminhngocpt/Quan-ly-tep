@@ -10,27 +10,71 @@ import java.util.Locale
 
 object SeedDataRepository {
 
+    private val volumeNameRegex = Regex("""^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$""")
+
+    fun findMountedRemovableVolumes(): List<File> {
+        val storageRoot = File("/storage")
+        return storageRoot.listFiles()
+            ?.filter { dir ->
+                dir.isDirectory &&
+                    dir.name !in setOf("emulated", "self", "sdcard0") &&
+                    volumeNameRegex.matches(dir.name) &&
+                    dir.canRead()
+            }
+            ?.sortedBy { it.name.lowercase(Locale.ROOT) }
+            .orEmpty()
+    }
+
+    fun resolveSourcePath(source: StorageSource): String {
+        return when (source) {
+            StorageSource.DEVICE -> {
+                val primary = runCatching { Environment.getExternalStorageDirectory().absolutePath }.getOrNull()
+                if (!primary.isNullOrBlank() && File(primary).exists()) primary else source.defaultPath
+            }
+            StorageSource.SD -> {
+                if (File(source.defaultPath).exists()) {
+                    source.defaultPath
+                } else {
+                    findMountedRemovableVolumes().firstOrNull()?.absolutePath ?: source.defaultPath
+                }
+            }
+            StorageSource.OTG -> {
+                if (File(source.defaultPath).exists()) {
+                    source.defaultPath
+                } else {
+                    findMountedRemovableVolumes().getOrNull(1)?.absolutePath ?: source.defaultPath
+                }
+            }
+            else -> source.defaultPath
+        }
+    }
+
     fun defaultMetadataMap(): Map<StorageSource, StorageMetadata> {
         return StorageSource.entries.associateWith { src ->
             var used = src.defaultUsedBytes
             var total = src.defaultTotalBytes
-            if (src == StorageSource.DEVICE) {
-                runCatching {
-                    val path = Environment.getExternalStorageDirectory()
-                    val stat = StatFs(path.path)
-                    val realTotal = stat.blockCountLong * stat.blockSizeLong
-                    val realFree = stat.availableBlocksLong * stat.blockSizeLong
-                    if (realTotal > 0L) {
-                        total = realTotal
-                        used = (realTotal - realFree).coerceAtLeast(0L)
+            val resolvedPath = resolveSourcePath(src)
+
+            if (src in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) {
+                val dir = File(resolvedPath)
+                if (dir.exists()) {
+                    runCatching {
+                        val stat = StatFs(dir.absolutePath)
+                        val realTotal = stat.totalBytes
+                        val realFree = stat.availableBytes
+                        if (realTotal > 0L) {
+                            total = realTotal
+                            used = (realTotal - realFree).coerceIn(0L, realTotal)
+                        }
                     }
                 }
             }
+
             StorageMetadata(
                 source = src,
                 label = src.label,
                 shortTag = src.defaultTag,
-                path = src.defaultPath,
+                path = resolvedPath,
                 usedBytes = used,
                 totalBytes = total,
                 host = src.defaultHost,
@@ -378,6 +422,12 @@ object SeedDataRepository {
         return rawFiles.map { file ->
             val isDir = file.isDirectory
             val count = if (isDir) (file.listFiles()?.size ?: 0) else 0
+            val ext = if (!isDir) getExtension(file.name) else ""
+            val readableText = if (!isDir && ext in DOC_EXTS && ext != "pdf" && file.length() in 0L..1_048_576L) {
+                runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
+            } else {
+                null
+            }
             FileNode(
                 id = "real_${file.absolutePath.hashCode()}_${file.name}",
                 name = file.name,
@@ -385,6 +435,7 @@ object SeedDataRepository {
                 modified = sdf.format(Date(file.lastModified())),
                 size = if (isDir) "$count mục" else formatSize(file.length()),
                 notes = file.absolutePath,
+                textContent = readableText,
                 realFilePath = file.absolutePath
             )
         }
