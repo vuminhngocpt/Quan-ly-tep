@@ -102,27 +102,6 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                             }
                         }
                     }
-
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = meta.label,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = state.currentPath(),
-                            fontSize = 11.5.sp,
-                            color = colors.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
