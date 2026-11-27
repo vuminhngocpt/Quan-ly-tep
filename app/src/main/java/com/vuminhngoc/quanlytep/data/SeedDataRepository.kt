@@ -437,29 +437,37 @@ object SeedDataRepository {
         )
     }
 
-    fun listRealAndroidDirectory(dirPath: String): List<FileNode> {
+    fun listRealAndroidDirectory(dirPath: String, showHidden: Boolean = true): List<FileNode> {
         val dir = File(dirPath)
         val rawFiles = dir.listFiles() ?: return emptyList()
         val sdf = SimpleDateFormat("dd/MM/yy", Locale.getDefault())
-        return rawFiles.map { file ->
-            val isDir = file.isDirectory
-            val count = if (isDir) (file.listFiles()?.size ?: 0) else 0
-            val ext = if (!isDir) getExtension(file.name) else ""
-            val readableText = if (!isDir && ext in DOC_EXTS && ext != "pdf" && file.length() in 0L..1_048_576L) {
-                runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
-            } else {
-                null
+        return rawFiles
+            .filter { file -> showHidden || !file.name.startsWith(".") }
+            .map { file ->
+                val isDir = file.isDirectory
+                val count = if (isDir) {
+                    file.listFiles()
+                        ?.count { child -> showHidden || !child.name.startsWith(".") }
+                        ?: 0
+                } else {
+                    0
+                }
+                val ext = if (!isDir) getExtension(file.name) else ""
+                val readableText = if (!isDir && ext in DOC_EXTS && ext != "pdf" && file.length() in 0L..1_048_576L) {
+                    runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
+                } else {
+                    null
+                }
+                FileNode(
+                    id = "real_${file.absolutePath.hashCode()}_${file.name}",
+                    name = file.name,
+                    isFolder = isDir,
+                    modified = sdf.format(Date(file.lastModified())),
+                    size = if (isDir) "$count mục" else formatSize(file.length()),
+                    notes = file.absolutePath,
+                    textContent = readableText,
+                    realFilePath = file.absolutePath
+                )
             }
-            FileNode(
-                id = "real_${file.absolutePath.hashCode()}_${file.name}",
-                name = file.name,
-                isFolder = isDir,
-                modified = sdf.format(Date(file.lastModified())),
-                size = if (isDir) "$count mục" else formatSize(file.length()),
-                notes = file.absolutePath,
-                textContent = readableText,
-                realFilePath = file.absolutePath
-            )
-        }
     }
 }
