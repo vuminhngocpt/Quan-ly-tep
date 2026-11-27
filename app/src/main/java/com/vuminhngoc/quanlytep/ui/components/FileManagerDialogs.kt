@@ -3,11 +3,6 @@ package com.vuminhngoc.quanlytep.ui.components
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -874,7 +869,6 @@ private fun SettingsDialog(
     onResetDemo: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
     val colors = LocalExtendedColors.current
 
     BaseModalCard(
@@ -918,17 +912,6 @@ private fun SettingsDialog(
         }
         SettingToggleRow("Xác nhận trước khi xóa", settings.confirmDelete) { v ->
             onUpdateSettings { it.copy(confirmDelete = v) }
-        }
-        SettingToggleRow("Đọc tệp thật trên bộ nhớ Android", settings.useRealDeviceStorage) { v ->
-            if (v && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-                runCatching {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                    }
-                    context.startActivity(intent)
-                }
-            }
-            onUpdateSettings { it.copy(useRealDeviceStorage = v) }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
