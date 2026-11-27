@@ -95,34 +95,76 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                         }
                     }
 
-                    Surface(
-                        shape = CircleShape,
-                        color = colors.surface,
-                        border = BorderStroke(1.dp, colors.border)
-                    ) {
-                        Row(modifier = Modifier.padding(2.dp)) {
-                            IconButton(
-                                onClick = { viewModel.goHistory(-1) },
-                                enabled = state.canGoBack,
-                                modifier = Modifier.size(30.dp)
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Outlined.ArrowBack,
-                                    contentDescription = "Quay lại",
-                                    modifier = Modifier.size(16.dp)
-                                )
+                    Box {
+                        Surface(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable { showOverflowMenu = true },
+                            shape = CircleShape,
+                            color = colors.surface,
+                            border = BorderStroke(1.dp, colors.border)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Outlined.MoreHoriz, contentDescription = "Thêm tùy chọn", tint = colors.text)
                             }
-                            IconButton(
-                                onClick = { viewModel.goHistory(1) },
-                                enabled = state.canGoForward,
-                                modifier = Modifier.size(30.dp)
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Outlined.ArrowForward,
-                                    contentDescription = "Tiến tới",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Tạo thư mục mới") },
+                                onClick = { showOverflowMenu = false; viewModel.openCreateModal("folder") }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Tạo tệp văn bản mới (.txt)") },
+                                onClick = { showOverflowMenu = false; viewModel.openCreateModal("txt") }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (state.clipboard != null) "Dán (${state.clipboard.items.size} mục)"
+                                        else "Dán từ bộ nhớ tạm"
+                                    )
+                                },
+                                onClick = { showOverflowMenu = false; viewModel.pasteClipboard() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Chọn nhiều mục") },
+                                onClick = { showOverflowMenu = false; viewModel.setSelectMode(true) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Nén tệp / thư mục...") },
+                                onClick = { showOverflowMenu = false; viewModel.openCompressModal() }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Quản lý nguồn lưu trữ") },
+                                onClick = { showOverflowMenu = false; viewModel.setShowStorageManager(true) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Cấu hình máy chủ NAS") },
+                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.NAS) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Kết nối máy chủ SMB") },
+                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.SMB) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Kết nối máy chủ FTP") },
+                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.FTP) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Cài đặt") },
+                                onClick = { showOverflowMenu = false; viewModel.setShowSettings(true) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Khôi phục dữ liệu mẫu", color = colors.danger) },
+                                onClick = { showOverflowMenu = false; viewModel.restoreDemoData() }
+                            )
                         }
                     }
                 }
@@ -435,74 +477,34 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                 ) {
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                         Surface(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .clickable { showOverflowMenu = true },
                             shape = CircleShape,
                             color = colors.surface,
                             border = BorderStroke(1.dp, colors.border)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Outlined.MoreHoriz, contentDescription = "Thêm tùy chọn", tint = colors.text)
-                            }
-                        }
-
-                        DropdownMenu(
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Tạo thư mục mới") },
-                                onClick = { showOverflowMenu = false; viewModel.openCreateModal("folder") }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Tạo tệp văn bản mới (.txt)") },
-                                onClick = { showOverflowMenu = false; viewModel.openCreateModal("txt") }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (state.clipboard != null) "Dán (${state.clipboard.items.size} mục)"
-                                        else "Dán từ bộ nhớ tạm"
+                            Row(modifier = Modifier.padding(2.dp)) {
+                                IconButton(
+                                    onClick = { viewModel.goHistory(-1) },
+                                    enabled = state.canGoBack,
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Outlined.ArrowBack,
+                                        contentDescription = "Quay lại",
+                                        modifier = Modifier.size(16.dp)
                                     )
-                                },
-                                onClick = { showOverflowMenu = false; viewModel.pasteClipboard() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Chọn nhiều mục") },
-                                onClick = { showOverflowMenu = false; viewModel.setSelectMode(true) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Nén tệp / thư mục...") },
-                                onClick = { showOverflowMenu = false; viewModel.openCompressModal() }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("Quản lý nguồn lưu trữ") },
-                                onClick = { showOverflowMenu = false; viewModel.setShowStorageManager(true) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Cấu hình máy chủ NAS") },
-                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.NAS) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Kết nối máy chủ SMB") },
-                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.SMB) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Kết nối máy chủ FTP") },
-                                onClick = { showOverflowMenu = false; viewModel.openNetworkModal(StorageSource.FTP) }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("Cài đặt") },
-                                onClick = { showOverflowMenu = false; viewModel.setShowSettings(true) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Khôi phục dữ liệu mẫu", color = colors.danger) },
-                                onClick = { showOverflowMenu = false; viewModel.restoreDemoData() }
-                            )
+                                }
+                                IconButton(
+                                    onClick = { viewModel.goHistory(1) },
+                                    enabled = state.canGoForward,
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Outlined.ArrowForward,
+                                        contentDescription = "Tiến tới",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                         }
                     }
 
