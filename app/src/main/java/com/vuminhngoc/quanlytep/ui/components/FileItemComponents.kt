@@ -22,6 +22,21 @@ import androidx.compose.ui.unit.sp
 import com.vuminhngoc.quanlytep.model.FileNode
 import com.vuminhngoc.quanlytep.model.ItemKind
 import com.vuminhngoc.quanlytep.ui.theme.LocalExtendedColors
+import java.io.File
+
+private fun folderCountLabel(item: FileNode): String {
+    val trimmedSize = item.size.trim()
+    if (trimmedSize.endsWith("mục")) return trimmedSize
+    val realPath = item.realFilePath
+    if (!realPath.isNullOrBlank()) {
+        val dir = File(realPath)
+        if (dir.exists() && dir.isDirectory) {
+            val count = dir.listFiles()?.size ?: 0
+            return "$count mục"
+        }
+    }
+    return "${item.children.size} mục"
+}
 
 @Composable
 fun ItemTypeBadge(kind: ItemKind, modifier: Modifier = Modifier) {
@@ -70,7 +85,7 @@ fun FileListRowCard(
     val metaParts = buildList {
         add(item.modified.ifBlank { "26/11/26" })
         if (kind == ItemKind.FOLDER) {
-            add("${item.children.size} mục")
+            add(folderCountLabel(item))
         } else if (showSize && item.size.isNotBlank()) {
             add(item.size)
         }
@@ -155,7 +170,7 @@ fun FileGridTileCard(
     val colors = LocalExtendedColors.current
     val kind = item.detectKind()
     val subText = if (kind == ItemKind.FOLDER) {
-        "${item.children.size} mục"
+        folderCountLabel(item)
     } else if (showSize && item.size.isNotBlank()) {
         item.size
     } else {
