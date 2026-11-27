@@ -70,7 +70,7 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -100,6 +100,29 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { viewModel.setShowStorageManager(true) },
+                        shape = CircleShape,
+                        color = colors.surface,
+                        border = BorderStroke(1.dp, colors.border)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(state.source.dotColorHex))
+                            )
+                            Text(meta.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
                         }
                     }
                 }
@@ -409,7 +432,7 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Box {
                         Surface(
@@ -491,29 +514,6 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                         fontSize = 12.sp,
                         color = colors.textSecondary
                     )
-
-                    Surface(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { viewModel.setShowStorageManager(true) },
-                        shape = CircleShape,
-                        color = colors.surface,
-                        border = BorderStroke(1.dp, colors.border)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(state.source.dotColorHex))
-                            )
-                            Text(meta.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
-                        }
-                    }
                 }
             }
         }
