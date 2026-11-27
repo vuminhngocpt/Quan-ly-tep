@@ -73,6 +73,29 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Surface(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { viewModel.setShowStorageManager(true) },
+                        shape = CircleShape,
+                        color = colors.surface,
+                        border = BorderStroke(1.dp, colors.border)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(state.source.dotColorHex))
+                            )
+                            Text(meta.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
+                        }
+                    }
+
+                    Surface(
                         shape = CircleShape,
                         color = colors.surface,
                         border = BorderStroke(1.dp, colors.border)
@@ -100,29 +123,6 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
-                        }
-                    }
-
-                    Surface(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { viewModel.setShowStorageManager(true) },
-                        shape = CircleShape,
-                        color = colors.surface,
-                        border = BorderStroke(1.dp, colors.border)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(state.source.dotColorHex))
-                            )
-                            Text(meta.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
                         }
                     }
                 }
@@ -431,10 +431,9 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box {
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                         Surface(
                             modifier = Modifier
                                 .size(38.dp)
@@ -512,8 +511,12 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                             "${items.size} mục • Đã chọn ${state.selectedIds.size}"
                         } else "${items.size} mục",
                         fontSize = 12.sp,
-                        color = colors.textSecondary
+                        color = colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f)
                     )
+
+                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }
