@@ -123,23 +123,6 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-
-                    Surface(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { viewModel.setShowAllSources(true) },
-                        shape = CircleShape,
-                        color = colors.surface,
-                        border = BorderStroke(1.dp, colors.border)
-                    ) {
-                        Text(
-                            text = "Tất cả (6)",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = colors.text,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
-                    }
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
