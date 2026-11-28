@@ -476,6 +476,55 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                     }
                 }
 
+                val progress = state.operationProgress
+                AnimatedVisibility(visible = progress != null) {
+                    if (progress != null) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.surface2,
+                            border = BorderStroke(1.dp, colors.accent)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = state.operationLabel ?: "Đang xử lý...",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colors.accentText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "${(progress.coerceIn(0f, 1f) * 100f).toInt()}%",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = colors.text
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .clip(CircleShape),
+                                    color = colors.accent,
+                                    trackColor = colors.surface3
+                                )
+                            }
+                        }
+                    }
+                }
+
                 HorizontalDivider(color = colors.border)
             }
         },
