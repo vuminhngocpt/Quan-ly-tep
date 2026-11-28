@@ -1,12 +1,14 @@
 package com.vuminhngoc.quanlytep.viewmodel
 
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.vuminhngoc.quanlytep.data.AudioPlayerController
 import com.vuminhngoc.quanlytep.data.FileDetailReader
 import com.vuminhngoc.quanlytep.data.SeedDataRepository
 import com.vuminhngoc.quanlytep.model.*
@@ -48,6 +50,9 @@ data class FileManagerUiState(
     val infoModalTarget: FileNode? = null,
     val infoModalDetail: FileDetailInfo? = null,
     val mediaModalTarget: FileNode? = null,
+    val isAudioPlaying: Boolean = false,
+    val mediaPositionMs: Long = 0L,
+    val mediaDurationMs: Long = 0L,
     val docModalTarget: FileNode? = null,
     val archiveModalTarget: FileNode? = null,
     val showCompressModal: Boolean = false,
@@ -128,11 +133,111 @@ class FileManagerViewModel(private val appContext: Context? = null) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val archiveEntriesCache = ConcurrentHashMap<String, List<ArchiveEntryItem>>()
+    private val audioPlayer = AudioPlayerController(appContext)
+
+    private val audioTicker = object : Runnable {
+        override fun run() {
+            if (audioPlayer.isPlaying() && uiState.mediaModalTarget != null) {
+                uiState = uiState.copy(
+                    isAudioPlaying = true,
+                    mediaPositionMs = audioPlayer.currentPositionMs()
+                )
+                mainHandler.postDelayed(this, 400L)
+            } else {
+                uiState = uiState.copy(isAudioPlaying = false)
+            }
+        }
+    }
 
     init {
         refreshRealStorageMetadata(StorageSource.DEVICE)
         refreshRealStorageMetadata(StorageSource.SD)
         refreshRealStorageMetadata(StorageSource.OTG)
+    }
+
+    private fun startAudioTicker() {
+        mainHandler.removeCallbacks(audioTicker)
+        mainHandler.postDelayed(audioTicker, 400L)
+    }
+
+    private fun stopAudioTicker() {
+        mainHandler.removeCallbacks(audioTicker)
+    }
+
+    fun formatMediaTime(ms: Long): String = audioPlayer.formatDuration(ms)
+
+    private fun prepareMediaModal(item: FileNode) {
+        audioPlayer.stopAndRelease()
+        stopAudioTicker()
+
+        val initialDurationMs = if (item.detectKind() == ItemKind.AUDIO) {
+            val raw = item.realFilePath?.takeIf { it.isNotBlank() }
+            if (raw != null && raw.startsWith("content://")) {
+                audioPlayer.readDurationMs(Uri.parse(raw))
+            } else {
+                val audioFile = audioPlayer.resolveAudioFile(raw, uiState.currentPath(), item.name)
+                audioFile?.let { audioPlayer.readDurationMs(it) } ?: 0L
+            }
+        } else {
+            0L
+        }
+
+        uiState = uiState.copy(
+            mediaModalTarget = item,
+            isAudioPlaying = false,
+            mediaPositionMs = 0L,
+            mediaDurationMs = initialDurationMs
+        )
+    }
+
+    fun toggleAudioPlayback() {
+        val target = uiState.mediaModalTarget ?: return
+        if (target.detectKind() != ItemKind.AUDIO) return
+
+        val rawPath = target.realFilePath?.takeIf { it.isNotBlank() }
+        val onResult: (Boolean, Long, Long, String?) -> Unit = { playing, posMs, durMs, error ->
+            mainHandler.post {
+                if (error != null) {
+                    stopAudioTicker()
+                    uiState = uiState.copy(
+                        isAudioPlaying = false,
+                        mediaPositionMs = 0L,
+                        toastMessage = error
+                    )
+                } else {
+                    val resolvedDur = if (durMs > 0L) durMs else uiState.mediaDurationMs
+                    uiState = uiState.copy(
+                        isAudioPlaying = playing,
+                        mediaPositionMs = posMs,
+                        mediaDurationMs = resolvedDur
+                    )
+                    if (playing) {
+                        startAudioTicker()
+                    } else {
+                        stopAudioTicker()
+                    }
+                }
+            }
+        }
+
+        if (rawPath != null && rawPath.startsWith("content://")) {
+            audioPlayer.togglePlayUri(Uri.parse(rawPath), onResult)
+            return
+        }
+
+        val audioFile = audioPlayer.resolveAudioFile(rawPath, uiState.currentPath(), target.name)
+        if (audioFile == null || !audioFile.exists()) {
+            showToast("Không tìm thấy tệp âm thanh trên thiết bị: ${target.name}")
+            return
+        }
+
+        audioPlayer.togglePlayFile(audioFile, onResult)
+    }
+
+    fun seekAudioTo(positionMs: Long) {
+        if (uiState.mediaModalTarget?.detectKind() != ItemKind.AUDIO) return
+        val clamped = audioPlayer.seekTo(positionMs)
+        uiState = uiState.copy(mediaPositionMs = clamped)
     }
 
     private fun archiveCacheKey(file: File): String =
@@ -653,7 +758,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 }
             }
             ItemKind.DOC -> uiState = uiState.copy(docModalTarget = item)
-            ItemKind.IMAGE, ItemKind.VIDEO, ItemKind.AUDIO -> uiState = uiState.copy(mediaModalTarget = item)
+            ItemKind.IMAGE, ItemKind.VIDEO, ItemKind.AUDIO -> prepareMediaModal(item)
             ItemKind.FILE -> openInfoModal(item)
         }
     }
@@ -1018,7 +1123,14 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     }
 
     fun closeMediaModal() {
-        uiState = uiState.copy(mediaModalTarget = null)
+        audioPlayer.stopAndRelease()
+        stopAudioTicker()
+        uiState = uiState.copy(
+            mediaModalTarget = null,
+            isAudioPlaying = false,
+            mediaPositionMs = 0L,
+            mediaDurationMs = 0L
+        )
     }
 
     fun navigateMedia(delta: Int) {
@@ -1029,7 +1141,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         val idx = mediaItems.indexOfFirst { it.id == current.id }
         val nextIdx = idx + delta
         if (idx >= 0 && nextIdx in mediaItems.indices) {
-            uiState = uiState.copy(mediaModalTarget = mediaItems[nextIdx])
+            prepareMediaModal(mediaItems[nextIdx])
         }
     }
 
@@ -1543,6 +1655,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     }
 
     fun restoreDemoData() {
+        audioPlayer.stopAndRelease()
+        stopAudioTicker()
         val keptTheme = uiState.settings.themeMode
         val keptSource = uiState.source
         uiState = FileManagerUiState(
