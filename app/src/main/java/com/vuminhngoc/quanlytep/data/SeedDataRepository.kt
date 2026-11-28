@@ -26,7 +26,7 @@ object SeedDataRepository {
                     val marker = "/Android/data/"
                     val cutIdx = fullPath.indexOf(marker)
                     val rootPath = if (cutIdx > 0) fullPath.substring(0, cutIdx) else fullPath
-                    File(rootPath).takeIf { it.exists() && it.isDirectory }?.let { volumes.add(it) }
+                    File(rootPath).takeIf { it.exists() && it.isDirectory && it.canRead() }?.let { volumes.add(it) }
                 }
             }
 
@@ -35,24 +35,24 @@ object SeedDataRepository {
                     val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
                     sm?.storageVolumes?.forEach { vol ->
                         if (vol.isRemovable && !vol.isPrimary) {
-                            vol.directory?.takeIf { it.exists() && it.isDirectory }?.let { volumes.add(it) }
+                            vol.directory
+                                ?.takeIf { it.exists() && it.isDirectory && it.canRead() }
+                                ?.let { volumes.add(it) }
                         }
                     }
                 }
             }
         }
 
-        listOf(File("/storage"), File("/mnt/media_rw")).forEach { root ->
-            root.listFiles()
-                ?.filter { dir ->
-                    dir.isDirectory &&
-                        dir.name !in setOf("emulated", "self", "sdcard0") &&
-                        volumeNameRegex.matches(dir.name) &&
-                        dir.canRead()
-                }
-                ?.sortedBy { it.name.lowercase(Locale.ROOT) }
-                ?.forEach { volumes.add(it) }
-        }
+        File("/storage").listFiles()
+            ?.filter { dir ->
+                dir.isDirectory &&
+                    dir.name !in setOf("emulated", "self", "sdcard0") &&
+                    volumeNameRegex.matches(dir.name) &&
+                    dir.canRead()
+            }
+            ?.sortedBy { it.name.lowercase(Locale.ROOT) }
+            ?.forEach { volumes.add(it) }
 
         return volumes.toList()
     }
@@ -60,7 +60,7 @@ object SeedDataRepository {
     fun resolveRemovableStoragePath(context: Context, index: Int = 0): String? {
         val mounted = findMountedRemovableVolumes(context)
         if (mounted.isEmpty()) return null
-        return mounted.getOrNull(index) ?: mounted.firstOrNull()
+        return (mounted.getOrNull(index) ?: mounted.firstOrNull())?.absolutePath
     }
 
     private fun findUsbOtgVolume(context: Context?): File? {
@@ -74,13 +74,12 @@ object SeedDataRepository {
                     vol.isRemovable && !vol.isPrimary &&
                         vol.getDescription(context).contains("usb", ignoreCase = true)
                 }?.directory
-                if (usbVol != null && usbVol.exists() && usbVol.isDirectory) {
+                if (usbVol != null && usbVol.exists() && usbVol.isDirectory && usbVol.canRead()) {
                     return usbVol
                 }
             }
         }
 
-        // Nếu có >= 2 volume ngoài: volume thứ 2 thường là USB OTG; nếu chỉ có 1 volume ngoài thì dùng luôn volume đó
         return mounted.getOrNull(1) ?: mounted.firstOrNull()
     }
 
@@ -95,7 +94,7 @@ object SeedDataRepository {
                     vol.isRemovable && !vol.isPrimary &&
                         !vol.getDescription(context).contains("usb", ignoreCase = true)
                 }?.directory
-                if (sdVol != null && sdVol.exists() && sdVol.isDirectory) {
+                if (sdVol != null && sdVol.exists() && sdVol.isDirectory && sdVol.canRead()) {
                     return sdVol
                 }
             }
