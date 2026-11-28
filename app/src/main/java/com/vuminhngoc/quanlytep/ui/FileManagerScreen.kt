@@ -41,6 +41,13 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
     val state = viewModel.uiState
     val colors = LocalExtendedColors.current
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var isMultiBarDismissed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.selectMode, state.selectedIds.size, state.clipboard) {
+        if (state.selectMode || state.selectedIds.isNotEmpty() || state.clipboard != null) {
+            isMultiBarDismissed = false
+        }
+    }
 
     LaunchedEffect(state.toastMessage) {
         if (state.toastMessage != null) {
@@ -129,11 +136,19 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                         else "Dán từ bộ nhớ tạm"
                                     )
                                 },
-                                onClick = { showOverflowMenu = false; viewModel.pasteClipboard() }
+                                onClick = {
+                                    showOverflowMenu = false
+                                    viewModel.pasteClipboard()
+                                    isMultiBarDismissed = true
+                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("Chọn nhiều mục") },
-                                onClick = { showOverflowMenu = false; viewModel.setSelectMode(true) }
+                                onClick = {
+                                    showOverflowMenu = false
+                                    isMultiBarDismissed = false
+                                    viewModel.setSelectMode(true)
+                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("Nén tệp / thư mục...") },
@@ -404,7 +419,8 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                     }
                 }
 
-                val showMultiBar = state.selectMode || state.selectedIds.isNotEmpty() || state.clipboard != null
+                val showMultiBar = !isMultiBarDismissed &&
+                    (state.selectMode || state.selectedIds.isNotEmpty() || state.clipboard != null)
                 AnimatedVisibility(visible = showMultiBar) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -437,6 +453,8 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                 }
                                 SmallBarChip("Dán", enabled = state.clipboard != null) {
                                     viewModel.pasteClipboard()
+                                    viewModel.setSelectMode(false)
+                                    isMultiBarDismissed = true
                                 }
                                 SmallBarChip("Nén", enabled = state.selectedIds.isNotEmpty()) {
                                     viewModel.openCompressModal()
@@ -448,7 +466,11 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                 SmallBarChip("Xóa", enabled = state.selectedIds.isNotEmpty(), danger = true) {
                                     viewModel.requestDeleteSelected()
                                 }
-                                SmallBarChip("Xong") { viewModel.setSelectMode(false) }
+                                SmallBarChip("Xong") {
+                                    viewModel.setSelectMode(false)
+                                    viewModel.deselectAll()
+                                    isMultiBarDismissed = true
+                                }
                             }
                         }
                     }
@@ -553,7 +575,10 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                 viewModel.setFilter(FileFilter.ALL)
                             }) { Text("Xóa bộ lọc") }
                             if (state.clipboard != null) {
-                                OutlinedButton(onClick = { viewModel.pasteClipboard() }) { Text("Dán") }
+                                OutlinedButton(onClick = {
+                                    viewModel.pasteClipboard()
+                                    isMultiBarDismissed = true
+                                }) { Text("Dán") }
                             }
                         }
                     }
