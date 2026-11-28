@@ -63,6 +63,16 @@ object SeedDataRepository {
         return (mounted.getOrNull(index) ?: mounted.firstOrNull())?.absolutePath
     }
 
+    private fun isUsbDescription(desc: String): Boolean {
+        val lower = desc.lowercase(Locale.ROOT)
+        return "usb" in lower || "otg" in lower || "flash" in lower || "ổ đĩa" in lower
+    }
+
+    private fun isSdDescription(desc: String): Boolean {
+        val lower = desc.lowercase(Locale.ROOT)
+        return "sd" in lower || "card" in lower || "thẻ" in lower
+    }
+
     private fun findUsbOtgVolume(context: Context?): File? {
         val mounted = findMountedRemovableVolumes(context)
         if (mounted.isEmpty()) return null
@@ -72,7 +82,7 @@ object SeedDataRepository {
                 val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
                 val usbVol = sm?.storageVolumes?.firstOrNull { vol ->
                     vol.isRemovable && !vol.isPrimary &&
-                        vol.getDescription(context).contains("usb", ignoreCase = true)
+                        isUsbDescription(vol.getDescription(context))
                 }?.directory
                 if (usbVol != null && usbVol.exists() && usbVol.isDirectory && usbVol.canRead()) {
                     return usbVol
@@ -80,7 +90,7 @@ object SeedDataRepository {
             }
         }
 
-        return mounted.getOrNull(1) ?: mounted.firstOrNull()
+        return mounted.getOrNull(1)
     }
 
     private fun findSdCardVolume(context: Context?): File? {
@@ -92,7 +102,7 @@ object SeedDataRepository {
                 val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
                 val sdVol = sm?.storageVolumes?.firstOrNull { vol ->
                     vol.isRemovable && !vol.isPrimary &&
-                        !vol.getDescription(context).contains("usb", ignoreCase = true)
+                        (isSdDescription(vol.getDescription(context)) || !isUsbDescription(vol.getDescription(context)))
                 }?.directory
                 if (sdVol != null && sdVol.exists() && sdVol.isDirectory && sdVol.canRead()) {
                     return sdVol
