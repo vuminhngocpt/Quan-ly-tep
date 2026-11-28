@@ -69,10 +69,11 @@ data class FileManagerUiState(
 
     fun currentRawItems(): List<FileNode> {
         if (settings.useRealDeviceStorage && (source == StorageSource.DEVICE || source == StorageSource.SD || source == StorageSource.OTG)) {
-            val realList = SeedDataRepository.listRealAndroidDirectory(currentPath())
-            if (realList.isNotEmpty() || File(currentPath()).exists()) {
-                return realList
+            val targetDir = File(currentPath())
+            if (targetDir.exists() && targetDir.isDirectory) {
+                return SeedDataRepository.listRealAndroidDirectory(targetDir.absolutePath, settings.showHidden)
             }
+            return emptyList()
         }
         var list = trees[source].orEmpty()
         for (step in folderStack) {
@@ -117,7 +118,11 @@ data class FileManagerUiState(
 }
 
 class FileManagerViewModel(private val appContext: Context? = null) {
-    var uiState by mutableStateOf(FileManagerUiState())
+    var uiState by mutableStateOf(
+        FileManagerUiState(
+            storageMeta = SeedDataRepository.defaultMetadataMap(appContext)
+        )
+    )
         private set
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -126,6 +131,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     init {
         refreshRealStorageMetadata(StorageSource.DEVICE)
         refreshRealStorageMetadata(StorageSource.SD)
+        refreshRealStorageMetadata(StorageSource.OTG)
     }
 
     private fun archiveCacheKey(file: File): String =
@@ -163,16 +169,10 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
         if (File(fallbackPath).exists()) return fallbackPath
 
-        val storageRoot = File("/storage")
-        val mountedVolumes = storageRoot.listFiles()?.filter { dir ->
-            dir.isDirectory &&
-                dir.name !in setOf("emulated", "self", "sdcard0") &&
-                Regex("""^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$""").matches(dir.name)
-        }.orEmpty()
-
+        val mountedVolumes = SeedDataRepository.findMountedRemovableVolumes(appContext)
         return when (source) {
             StorageSource.SD -> mountedVolumes.firstOrNull()?.absolutePath ?: fallbackPath
-            StorageSource.OTG -> mountedVolumes.getOrNull(1)?.absolutePath ?: fallbackPath
+            StorageSource.OTG -> (mountedVolumes.getOrNull(1) ?: mountedVolumes.firstOrNull())?.absolutePath ?: fallbackPath
             else -> fallbackPath
         }
     }
@@ -192,7 +192,21 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             ?: SeedDataRepository.defaultMetadataMap(appContext).getValue(targetSource)
         val resolvedPath = resolveRealStoragePath(targetSource, baseMeta.path)
         val dir = File(resolvedPath)
-        if (!dir.exists()) return
+
+        if (!dir.exists() || !dir.isDirectory) {
+            if (targetSource in setOf(StorageSource.SD, StorageSource.OTG)) {
+                uiState = uiState.copy(
+                    storageMeta = uiState.storageMeta + (
+                        targetSource to baseMeta.copy(
+                            path = resolvedPath,
+                            usedBytes = 0L,
+                            totalBytes = 0L
+                        )
+                    )
+                )
+            }
+            return
+        }
 
         try {
             val stat = StatFs(dir.absolutePath)
@@ -331,7 +345,6 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         return if (isGzip) BufferedInputStream(GZIPInputStream(fis), 65536) else fis
     }
 
-    // Đọc Central Directory của ZIP bằng ZipFile để mở xem trước cực nhanh
     private fun readZipEntries(zipFile: File, maxEntries: Int = 1000): List<ArchiveEntryItem> {
         if (!zipFile.exists() || !zipFile.isFile) return emptyList()
         val key = archiveCacheKey(zipFile)
@@ -1501,6 +1514,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         val keptSource = uiState.source
         uiState = FileManagerUiState(
             source = keptSource,
+            storageMeta = SeedDataRepository.defaultMetadataMap(appContext),
             settings = AppSettings(themeMode = keptTheme),
             toastMessage = "Đã khôi phục dữ liệu mẫu cho cả 6 nguồn lưu trữ."
         )
