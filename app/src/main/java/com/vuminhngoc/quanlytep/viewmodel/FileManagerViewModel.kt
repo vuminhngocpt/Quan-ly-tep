@@ -7,6 +7,7 @@ import android.os.StatFs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.vuminhngoc.quanlytep.data.FileDetailReader
 import com.vuminhngoc.quanlytep.data.SeedDataRepository
 import com.vuminhngoc.quanlytep.model.*
 import java.io.BufferedInputStream
@@ -45,6 +46,7 @@ data class FileManagerUiState(
     val showAllSourcesModal: Boolean = false,
     val createModalKind: String? = null,
     val infoModalTarget: FileNode? = null,
+    val infoModalDetail: FileDetailInfo? = null,
     val mediaModalTarget: FileNode? = null,
     val docModalTarget: FileNode? = null,
     val archiveModalTarget: FileNode? = null,
@@ -652,7 +654,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
             ItemKind.DOC -> uiState = uiState.copy(docModalTarget = item)
             ItemKind.IMAGE, ItemKind.VIDEO, ItemKind.AUDIO -> uiState = uiState.copy(mediaModalTarget = item)
-            ItemKind.FILE -> uiState = uiState.copy(infoModalTarget = item)
+            ItemKind.FILE -> openInfoModal(item)
         }
     }
 
@@ -935,11 +937,32 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     }
 
     fun openInfoModal(item: FileNode) {
-        uiState = uiState.copy(infoModalTarget = item, longPressTarget = null)
+        val initialPath = item.realFilePath?.takeIf { it.isNotBlank() }
+            ?: "${uiState.currentPath()}/${item.name}"
+        uiState = uiState.copy(
+            infoModalTarget = item,
+            infoModalDetail = FileDetailInfo(
+                fileFormat = FileDetailReader.detectFileFormat(item),
+                formattedTime = item.modified.ifBlank { "—" },
+                fullPath = initialPath,
+                isComputing = true
+            ),
+            longPressTarget = null
+        )
+        val basePath = uiState.currentPath()
+        val ctx = appContext
+        Thread {
+            val detail = FileDetailReader.readDetails(ctx, item, basePath)
+            mainHandler.post {
+                if (uiState.infoModalTarget?.id == item.id) {
+                    uiState = uiState.copy(infoModalDetail = detail)
+                }
+            }
+        }.start()
     }
 
     fun closeInfoModal() {
-        uiState = uiState.copy(infoModalTarget = null)
+        uiState = uiState.copy(infoModalTarget = null, infoModalDetail = null)
     }
 
     fun saveItemInfo(targetId: String, newName: String, newNotes: String) {
@@ -987,6 +1010,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         uiState = uiState.copy(
             trees = nextTrees,
             infoModalTarget = null,
+            infoModalDetail = null,
             selectedIds = emptySet(),
             selectMode = false,
             toastMessage = "Đã lưu thông tin mục."
@@ -1010,7 +1034,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     }
 
     fun openDocModal(item: FileNode) {
-        uiState = uiState.copy(docModalTarget = item, infoModalTarget = null)
+        uiState = uiState.copy(docModalTarget = item, infoModalTarget = null, infoModalDetail = null)
     }
 
     fun closeDocModal() {
