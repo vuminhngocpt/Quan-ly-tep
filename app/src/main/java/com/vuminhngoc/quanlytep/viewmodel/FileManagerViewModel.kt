@@ -21,7 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
-import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 data class FileManagerUiState(
@@ -165,15 +164,25 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     private fun resolveRealStoragePath(source: StorageSource, fallbackPath: String): String {
         val resolvedByRepo = SeedDataRepository.resolveSourcePath(source, appContext)
         if (resolvedByRepo.isNotBlank() && File(resolvedByRepo).exists()) {
-            return resolvedByRepo
+            if (source == StorageSource.OTG) {
+                val sdPath = SeedDataRepository.resolveSourcePath(StorageSource.SD, appContext)
+                if (resolvedByRepo != sdPath) {
+                    return resolvedByRepo
+                }
+            } else {
+                return resolvedByRepo
+            }
         }
-        if (File(fallbackPath).exists()) return fallbackPath
 
-        val mountedVolumes = SeedDataRepository.findMountedRemovableVolumes(appContext)
         return when (source) {
-            StorageSource.SD -> mountedVolumes.firstOrNull()?.absolutePath ?: fallbackPath
-            StorageSource.OTG -> (mountedVolumes.getOrNull(1) ?: mountedVolumes.firstOrNull())?.absolutePath ?: fallbackPath
-            else -> fallbackPath
+            StorageSource.DEVICE -> if (File(fallbackPath).exists()) fallbackPath else StorageSource.DEVICE.defaultPath
+            StorageSource.SD -> {
+                val mountedVolumes = SeedDataRepository.findMountedRemovableVolumes(appContext)
+                mountedVolumes.firstOrNull()?.absolutePath
+                    ?: if (File(fallbackPath).exists()) fallbackPath else StorageSource.SD.defaultPath
+            }
+            StorageSource.OTG -> StorageSource.OTG.defaultPath
+            else -> if (File(fallbackPath).exists()) fallbackPath else source.defaultPath
         }
     }
 
