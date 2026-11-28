@@ -186,7 +186,6 @@ fun FileManagerDialogsHost(
             settings = state.settings,
             onUpdateSettings = { viewModel.updateSettings(it) },
             onClearCache = { viewModel.showToast("Đã xóa bộ nhớ đệm tìm kiếm.") },
-            onResetDemo = { viewModel.restoreDemoData() },
             onDismiss = { viewModel.setShowSettings(false) }
         )
     }
@@ -866,7 +865,6 @@ private fun SettingsDialog(
     settings: AppSettings,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onClearCache: () -> Unit,
-    onResetDemo: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = LocalExtendedColors.current
@@ -916,7 +914,6 @@ private fun SettingsDialog(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onClearCache) { Text("Xóa bộ nhớ đệm", fontSize = 12.sp) }
-            OutlinedButton(onClick = onResetDemo) { Text("Khôi phục mẫu", fontSize = 12.sp) }
         }
 
         Surface(
