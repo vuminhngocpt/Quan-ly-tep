@@ -17,8 +17,10 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
@@ -38,6 +40,8 @@ data class FileManagerUiState(
     val profiles: Map<StorageSource, List<NetworkProfile>> = SeedDataRepository.defaultProfilesMap(),
     val trees: Map<StorageSource, List<FileNode>> = SeedDataRepository.buildAllSeedTrees(),
     val toastMessage: String? = null,
+    val operationProgress: Float? = null,
+    val operationLabel: String? = null,
     val longPressTarget: FileNode? = null,
     val showAllSourcesModal: Boolean = false,
     val createModalKind: String? = null,
@@ -117,10 +121,35 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         private set
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val archiveEntriesCache = ConcurrentHashMap<String, List<ArchiveEntryItem>>()
 
     init {
         refreshRealStorageMetadata(StorageSource.DEVICE)
         refreshRealStorageMetadata(StorageSource.SD)
+    }
+
+    private fun archiveCacheKey(file: File): String =
+        "${file.absolutePath}_${file.lastModified()}_${file.length()}"
+
+    private fun postProgress(fraction: Float, prefix: String) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        val percent = (clamped * 100f).toInt()
+        mainHandler.post {
+            uiState = uiState.copy(
+                operationProgress = clamped,
+                operationLabel = "$prefix • $percent%",
+                toastMessage = "$prefix ($percent%)"
+            )
+        }
+    }
+
+    private fun clearProgress() {
+        mainHandler.post {
+            uiState = uiState.copy(
+                operationProgress = null,
+                operationLabel = null
+            )
+        }
     }
 
     private fun isRealLocalSource(): Boolean =
@@ -298,17 +327,22 @@ class FileManagerViewModel(private val appContext: Context? = null) {
     }
 
     private fun openTarStream(tarFile: File, isGzip: Boolean): InputStream {
-        val fis = BufferedInputStream(FileInputStream(tarFile))
-        return if (isGzip) BufferedInputStream(GZIPInputStream(fis)) else fis
+        val fis = BufferedInputStream(FileInputStream(tarFile), 65536)
+        return if (isGzip) BufferedInputStream(GZIPInputStream(fis), 65536) else fis
     }
 
-    private fun readZipEntries(zipFile: File, maxEntries: Int = 500): List<ArchiveEntryItem> {
+    // Đọc Central Directory của ZIP bằng ZipFile để mở xem trước cực nhanh
+    private fun readZipEntries(zipFile: File, maxEntries: Int = 1000): List<ArchiveEntryItem> {
         if (!zipFile.exists() || !zipFile.isFile) return emptyList()
-        return runCatching {
+        val key = archiveCacheKey(zipFile)
+        archiveEntriesCache[key]?.let { return it }
+
+        val parsed = runCatching {
             val result = mutableListOf<ArchiveEntryItem>()
-            ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null && result.size < maxEntries) {
+            ZipFile(zipFile).use { zf ->
+                val enumerator = zf.entries()
+                while (enumerator.hasMoreElements() && result.size < maxEntries) {
+                    val entry = enumerator.nextElement()
                     val cleanName = entry.name.replace('\\', '/').trim('/')
                     if (cleanName.isNotEmpty()) {
                         val sizeText = if (entry.isDirectory) {
@@ -326,12 +360,15 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             )
                         )
                     }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
                 }
             }
             result
         }.getOrDefault(emptyList())
+
+        if (parsed.isNotEmpty()) {
+            archiveEntriesCache[key] = parsed
+        }
+        return parsed
     }
 
     private fun parseTarOctal(buf: ByteArray, offset: Int, length: Int): Long {
@@ -373,7 +410,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
 
     private fun skipBytesExact(input: InputStream, count: Long) {
         var remaining = count
-        val buf = ByteArray(8192)
+        val buf = ByteArray(65536)
         while (remaining > 0L) {
             val toRead = remaining.coerceAtMost(buf.size.toLong()).toInt()
             val n = input.read(buf, 0, toRead)
@@ -382,9 +419,12 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         }
     }
 
-    private fun readTarEntries(tarFile: File, isGzip: Boolean = false, maxEntries: Int = 500): List<ArchiveEntryItem> {
+    private fun readTarEntries(tarFile: File, isGzip: Boolean = false, maxEntries: Int = 1000): List<ArchiveEntryItem> {
         if (!tarFile.exists() || !tarFile.isFile) return emptyList()
-        return runCatching {
+        val key = archiveCacheKey(tarFile)
+        archiveEntriesCache[key]?.let { return it }
+
+        val parsed = runCatching {
             val result = mutableListOf<ArchiveEntryItem>()
             val header = ByteArray(512)
             openTarStream(tarFile, isGzip).use { stream ->
@@ -417,20 +457,48 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
             result
         }.getOrDefault(emptyList())
+
+        if (parsed.isNotEmpty()) {
+            archiveEntriesCache[key] = parsed
+        }
+        return parsed
     }
 
-    private fun extractTarFile(
+    private fun extractTarFileWithProgress(
         tarFile: File,
         baseDir: File,
         selectedNames: Set<String>,
-        extractAll: Boolean = false,
-        isGzip: Boolean = false
+        extractAll: Boolean,
+        isGzip: Boolean,
+        onProgress: (Float) -> Unit
     ): Int {
         var extractedCount = 0
         val header = ByteArray(512)
         val canonicalBase = baseDir.canonicalPath
+        val totalFileBytes = tarFile.length().coerceAtLeast(1L)
+        val rawFileStream = FileInputStream(tarFile)
+        val channel = rawFileStream.channel
+        val stream: InputStream = if (isGzip) {
+            BufferedInputStream(GZIPInputStream(BufferedInputStream(rawFileStream, 65536)), 65536)
+        } else {
+            BufferedInputStream(rawFileStream, 65536)
+        }
+        var lastReportedPct = -1
 
-        openTarStream(tarFile, isGzip).use { stream ->
+        fun reportCurrentProgress() {
+            val ratio = if (!isGzip) {
+                (channel.position().toFloat() / totalFileBytes.toFloat()).coerceIn(0f, 0.99f)
+            } else {
+                (extractedCount.coerceAtMost(99) / 100f)
+            }
+            val pct = (ratio * 100f).toInt()
+            if (pct != lastReportedPct) {
+                lastReportedPct = pct
+                onProgress(ratio)
+            }
+        }
+
+        stream.use {
             while (true) {
                 if (!readFullyBlock(stream, header)) break
                 if (header.all { it.toInt() == 0 }) break
@@ -463,8 +531,8 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                         } else {
                             outFile.parentFile?.mkdirs()
                             var left = size
-                            val buf = ByteArray(8192)
-                            BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
+                            val buf = ByteArray(65536)
+                            BufferedOutputStream(FileOutputStream(outFile), 65536).use { bos ->
                                 while (left > 0L) {
                                     val toRead = left.coerceAtMost(buf.size.toLong()).toInt()
                                     val n = stream.read(buf, 0, toRead)
@@ -477,6 +545,7 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                             if (remainder > 0L) skipBytesExact(stream, remainder)
                             extractedCount++
                         }
+                        reportCurrentProgress()
                     } else {
                         skipBytesExact(stream, paddedBytes)
                     }
@@ -513,13 +582,19 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 if (isRealLocalSource() && (isZip || isTar)) {
                     val archiveFile = resolveArchiveFile(item)
                     if (archiveFile != null && archiveFile.exists()) {
-                        val syncedItem = item.copy(
-                            realFilePath = archiveFile.absolutePath,
-                            archiveEntries = emptyList()
-                        )
+                        val syncedItem = item.copy(realFilePath = archiveFile.absolutePath)
+                        val cached = archiveEntriesCache[archiveCacheKey(archiveFile)]
+                        if (cached != null) {
+                            uiState = uiState.copy(
+                                archiveModalTarget = syncedItem.copy(archiveEntries = cached),
+                                toastMessage = null
+                            )
+                            return
+                        }
+
                         uiState = uiState.copy(
-                            archiveModalTarget = syncedItem,
-                            toastMessage = "Đang đọc nội dung tệp nén..."
+                            archiveModalTarget = syncedItem.copy(archiveEntries = emptyList()),
+                            toastMessage = "Đang đọc danh sách mục..."
                         )
                         Thread {
                             val realEntries = if (isZip) {
@@ -702,9 +777,9 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                         return true
                     } else {
                         dst.parentFile?.mkdirs()
-                        BufferedInputStream(FileInputStream(src)).use { input ->
-                            BufferedOutputStream(FileOutputStream(dst)).use { output ->
-                                input.copyTo(output)
+                        BufferedInputStream(FileInputStream(src), 65536).use { input ->
+                            BufferedOutputStream(FileOutputStream(dst), 65536).use { output ->
+                                input.copyTo(output, bufferSize = 65536)
                             }
                         }
                         return dst.exists()
@@ -1005,9 +1080,12 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 effectiveEntries.map { it.name.replace('\\', '/').trim('/') }.toSet()
             }
 
+            val statusPrefix = "Đang giải nén \"${archive.name}\""
             uiState = uiState.copy(
                 archiveModalTarget = null,
-                toastMessage = "Đang giải nén \"${archive.name}\"..."
+                operationProgress = 0f,
+                operationLabel = "$statusPrefix • 0%",
+                toastMessage = "$statusPrefix (0%)"
             )
 
             Thread {
@@ -1015,39 +1093,75 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 var errorReason: String? = null
                 val ok = try {
                     if (isZip) {
-                        ZipInputStream(BufferedInputStream(FileInputStream(archiveFile))).use { zis ->
-                            var entry = zis.nextEntry
-                            while (entry != null) {
+                        ZipFile(archiveFile).use { zf ->
+                            val allEntries = zf.entries().toList()
+                            val matchingEntries = allEntries.filter { entry ->
                                 val cleanEntryName = entry.name.replace('\\', '/').trim('/')
-                                val matchesSelection = cleanEntryName.isNotEmpty() && (
+                                cleanEntryName.isNotEmpty() && (
                                     extractAll ||
                                         cleanEntryName in selectedNames ||
                                         selectedNames.any { sel -> cleanEntryName.startsWith("$sel/") }
                                     )
+                            }
+                            val totalToExtract = matchingEntries.size.coerceAtLeast(1)
+                            val totalBytes = matchingEntries.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
+                            var doneBytes = 0L
+                            var lastPct = -1
+                            val canonicalBase = baseDir.canonicalPath
+                            val buf = ByteArray(65536)
 
-                                if (matchesSelection) {
-                                    val outFile = File(baseDir, cleanEntryName)
-                                    val canonicalBase = baseDir.canonicalPath
-                                    val canonicalOut = outFile.canonicalPath
-                                    if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
-                                        if (entry.isDirectory) {
-                                            outFile.mkdirs()
-                                            extractedCount++
-                                        } else {
-                                            outFile.parentFile?.mkdirs()
-                                            BufferedOutputStream(FileOutputStream(outFile)).use { bos ->
-                                                zis.copyTo(bos)
+                            matchingEntries.forEachIndexed { idx, entry ->
+                                val cleanEntryName = entry.name.replace('\\', '/').trim('/')
+                                val outFile = File(baseDir, cleanEntryName)
+                                val canonicalOut = outFile.canonicalPath
+                                if (canonicalOut.startsWith("$canonicalBase${File.separator}") || canonicalOut == canonicalBase) {
+                                    if (entry.isDirectory) {
+                                        outFile.mkdirs()
+                                        extractedCount++
+                                    } else {
+                                        outFile.parentFile?.mkdirs()
+                                        zf.getInputStream(entry).use { input ->
+                                            BufferedOutputStream(FileOutputStream(outFile), 65536).use { bos ->
+                                                while (true) {
+                                                    val n = input.read(buf)
+                                                    if (n <= 0) break
+                                                    bos.write(buf, 0, n)
+                                                    doneBytes += n
+                                                    if (totalBytes > 0L) {
+                                                        val pct = ((doneBytes.toFloat() / totalBytes.toFloat()) * 100f)
+                                                            .toInt()
+                                                            .coerceIn(0, 99)
+                                                        if (pct != lastPct) {
+                                                            lastPct = pct
+                                                            postProgress(pct / 100f, statusPrefix)
+                                                        }
+                                                    }
+                                                }
                                             }
-                                            extractedCount++
                                         }
+                                        extractedCount++
                                     }
                                 }
-                                zis.closeEntry()
-                                entry = zis.nextEntry
+                                if (totalBytes <= 0L) {
+                                    val pct = (((idx + 1).toFloat() / totalToExtract.toFloat()) * 100f)
+                                        .toInt()
+                                        .coerceIn(0, 99)
+                                    if (pct != lastPct) {
+                                        lastPct = pct
+                                        postProgress(pct / 100f, statusPrefix)
+                                    }
+                                }
                             }
                         }
                     } else {
-                        extractedCount = extractTarFile(archiveFile, baseDir, selectedNames, extractAll, isGzip = isGzipTar)
+                        extractedCount = extractTarFileWithProgress(
+                            tarFile = archiveFile,
+                            baseDir = baseDir,
+                            selectedNames = selectedNames,
+                            extractAll = extractAll,
+                            isGzip = isGzipTar,
+                            onProgress = { ratio -> postProgress(ratio, statusPrefix) }
+                        )
                     }
                     extractedCount > 0
                 } catch (se: SecurityException) {
@@ -1059,14 +1173,19 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                 }
 
                 val resultMsg = when {
-                    ok && intoSubfolder -> "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\"."
-                    ok -> "Đã giải nén $extractedCount mục vào thư mục hiện tại."
+                    ok && intoSubfolder -> "Đã giải nén $extractedCount mục vào thư mục con \"$finalSubName\" (100%)."
+                    ok -> "Đã giải nén $extractedCount mục vào thư mục hiện tại (100%)."
                     errorReason != null -> errorReason!!
                     else -> "Không có mục nào được trích xuất (tệp trống hoặc sai cấu trúc lưu trữ)."
                 }
 
                 mainHandler.post {
-                    uiState = uiState.copy(toastMessage = resultMsg)
+                    clearProgress()
+                    uiState = uiState.copy(
+                        operationProgress = null,
+                        operationLabel = null,
+                        toastMessage = resultMsg
+                    )
                 }
             }.start()
             return
@@ -1100,10 +1219,12 @@ class FileManagerViewModel(private val appContext: Context? = null) {
         uiState = uiState.copy(
             trees = nextTrees,
             archiveModalTarget = null,
+            operationProgress = null,
+            operationLabel = null,
             toastMessage = if (intoSubfolder) {
-                "Đã giải nén ${extractedNodes.size} mục vào thư mục con."
+                "Đã giải nén ${extractedNodes.size} mục vào thư mục con (100%)."
             } else {
-                "Đã giải nén ${extractedNodes.size} mục vào thư mục hiện tại."
+                "Đã giải nén ${extractedNodes.size} mục vào thư mục hiện tại (100%)."
             }
         )
     }
@@ -1150,17 +1271,35 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             }
             val outFile = File(targetDir, finalFileName)
             val basePath = uiState.currentPath()
+            val statusPrefix = "Đang nén \"$finalFileName\""
 
             uiState = uiState.copy(
                 showCompressModal = false,
                 selectedIds = emptySet(),
                 selectMode = false,
-                toastMessage = "Đang nén thành \"$finalFileName\"..."
+                operationProgress = 0f,
+                operationLabel = "$statusPrefix • 0%",
+                toastMessage = "$statusPrefix (0%)"
             )
 
             Thread {
                 val created = runCatching {
-                    ZipOutputStream(BufferedOutputStream(FileOutputStream(outFile))).use { zos ->
+                    fun calcTotalBytes(file: File): Long {
+                        if (!file.exists()) return 0L
+                        if (file.isFile) return file.length()
+                        return file.listFiles()?.sumOf { calcTotalBytes(it) } ?: 0L
+                    }
+
+                    val sourceFiles = chosen.mapNotNull { node ->
+                        val f = File(node.realFilePath ?: "$basePath/${node.name}")
+                        if (f.exists()) f else null
+                    }
+                    val totalBytes = sourceFiles.sumOf { calcTotalBytes(it) }.coerceAtLeast(1L)
+                    var writtenBytes = 0L
+                    var lastPct = -1
+                    val buf = ByteArray(65536)
+
+                    ZipOutputStream(BufferedOutputStream(FileOutputStream(outFile), 65536)).use { zos ->
                         fun addToZip(src: File, entryPrefix: String) {
                             if (!src.exists()) return
                             if (src.isDirectory) {
@@ -1172,27 +1311,42 @@ class FileManagerViewModel(private val appContext: Context? = null) {
                                 }
                             } else {
                                 zos.putNextEntry(ZipEntry(entryPrefix))
-                                src.inputStream().use { input -> input.copyTo(zos) }
+                                BufferedInputStream(FileInputStream(src), 65536).use { input ->
+                                    while (true) {
+                                        val n = input.read(buf)
+                                        if (n <= 0) break
+                                        zos.write(buf, 0, n)
+                                        writtenBytes += n
+                                        val pct = ((writtenBytes.toFloat() / totalBytes.toFloat()) * 100f)
+                                            .toInt()
+                                            .coerceIn(0, 99)
+                                        if (pct != lastPct) {
+                                            lastPct = pct
+                                            postProgress(pct / 100f, statusPrefix)
+                                        }
+                                    }
+                                }
                                 zos.closeEntry()
                             }
                         }
-                        for (node in chosen) {
-                            val srcFile = File(node.realFilePath ?: "$basePath/${node.name}")
-                            if (srcFile.exists()) {
-                                addToZip(srcFile, srcFile.name)
-                            }
+                        for (srcFile in sourceFiles) {
+                            addToZip(srcFile, srcFile.name)
                         }
                     }
                     outFile.exists()
                 }.getOrDefault(false)
 
                 val msg = if (created) {
-                    "Đã nén thành \"$finalFileName\"."
+                    "Đã nén thành \"$finalFileName\" (100%)."
                 } else {
                     "Nén thất bại. Kiểm tra quyền bộ nhớ hoặc dung lượng trống."
                 }
                 mainHandler.post {
-                    uiState = uiState.copy(toastMessage = msg)
+                    uiState = uiState.copy(
+                        operationProgress = null,
+                        operationLabel = null,
+                        toastMessage = msg
+                    )
                 }
             }.start()
             return
@@ -1213,7 +1367,9 @@ class FileManagerViewModel(private val appContext: Context? = null) {
             showCompressModal = false,
             selectedIds = emptySet(),
             selectMode = false,
-            toastMessage = "Đã nén thành \"$fileName\"."
+            operationProgress = null,
+            operationLabel = null,
+            toastMessage = "Đã nén thành \"$fileName\" (100%)."
         )
     }
 
