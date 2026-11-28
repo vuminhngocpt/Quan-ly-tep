@@ -1,8 +1,10 @@
 package com.vuminhngoc.quanlytep.data
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.storage.StorageManager
 import com.vuminhngoc.quanlytep.model.*
 import java.io.File
 import java.text.SimpleDateFormat
@@ -13,32 +15,93 @@ object SeedDataRepository {
 
     private val volumeNameRegex = Regex("""^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$""")
 
-    fun findMountedRemovableVolumes(): List<File> {
-        val storageRoot = File("/storage")
-        return storageRoot.listFiles()
-            ?.filter { dir ->
-                dir.isDirectory &&
-                    dir.name !in setOf("emulated", "self", "sdcard0") &&
-                    volumeNameRegex.matches(dir.name) &&
-                    dir.canRead()
+    fun findMountedRemovableVolumes(context: Context? = null): List<File> {
+        val volumes = linkedSetOf<File>()
+
+        if (context != null) {
+            runCatching {
+                val dirs = context.getExternalFilesDirs(null)
+                dirs.drop(1).filterNotNull().forEach { appDir ->
+                    val fullPath = appDir.absolutePath
+                    val marker = "/Android/data/"
+                    val cutIdx = fullPath.indexOf(marker)
+                    val rootPath = if (cutIdx > 0) fullPath.substring(0, cutIdx) else fullPath
+                    File(rootPath).takeIf { it.exists() && it.isDirectory }?.let { volumes.add(it) }
+                }
             }
-            ?.sortedBy { it.name.lowercase(Locale.ROOT) }
-            .orEmpty()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching {
+                    val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                    sm?.storageVolumes?.forEach { vol ->
+                        if (vol.isRemovable && !vol.isPrimary) {
+                            vol.directory?.takeIf { it.exists() && it.isDirectory }?.let { volumes.add(it) }
+                        }
+                    }
+                }
+            }
+        }
+
+        listOf(File("/storage"), File("/mnt/media_rw")).forEach { root ->
+            root.listFiles()
+                ?.filter { dir ->
+                    dir.isDirectory &&
+                        dir.name !in setOf("emulated", "self", "sdcard0") &&
+                        volumeNameRegex.matches(dir.name) &&
+                        dir.canRead()
+                }
+                ?.sortedBy { it.name.lowercase(Locale.ROOT) }
+                ?.forEach { volumes.add(it) }
+        }
+
+        return volumes.toList()
     }
 
     fun resolveRemovableStoragePath(context: Context, index: Int = 0): String? {
-        val dirs = runCatching { context.getExternalFilesDirs(null) }.getOrNull().orEmpty()
-        val externalRoots = dirs.drop(1).filterNotNull().mapNotNull { appDir ->
-            val fullPath = appDir.absolutePath
-            val marker = "/Android/data/"
-            val cutIdx = fullPath.indexOf(marker)
-            val rootPath = if (cutIdx > 0) fullPath.substring(0, cutIdx) else fullPath
-            File(rootPath).takeIf { it.exists() }
+        val mounted = findMountedRemovableVolumes(context)
+        if (mounted.isEmpty()) return null
+        return mounted.getOrNull(index) ?: mounted.firstOrNull()
+    }
+
+    private fun findUsbOtgVolume(context: Context?): File? {
+        val mounted = findMountedRemovableVolumes(context)
+        if (mounted.isEmpty()) return null
+
+        if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                val usbVol = sm?.storageVolumes?.firstOrNull { vol ->
+                    vol.isRemovable && !vol.isPrimary &&
+                        vol.getDescription(context).contains("usb", ignoreCase = true)
+                }?.directory
+                if (usbVol != null && usbVol.exists() && usbVol.isDirectory) {
+                    return usbVol
+                }
+            }
         }
-        if (index in externalRoots.indices) {
-            return externalRoots[index].absolutePath
+
+        // Nếu có >= 2 volume ngoài: volume thứ 2 thường là USB OTG; nếu chỉ có 1 volume ngoài thì dùng luôn volume đó
+        return mounted.getOrNull(1) ?: mounted.firstOrNull()
+    }
+
+    private fun findSdCardVolume(context: Context?): File? {
+        val mounted = findMountedRemovableVolumes(context)
+        if (mounted.isEmpty()) return null
+
+        if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                val sdVol = sm?.storageVolumes?.firstOrNull { vol ->
+                    vol.isRemovable && !vol.isPrimary &&
+                        !vol.getDescription(context).contains("usb", ignoreCase = true)
+                }?.directory
+                if (sdVol != null && sdVol.exists() && sdVol.isDirectory) {
+                    return sdVol
+                }
+            }
         }
-        return findMountedRemovableVolumes().getOrNull(index)?.absolutePath
+
+        return mounted.firstOrNull()
     }
 
     fun resolveSourcePath(source: StorageSource, context: Context? = null): String {
@@ -48,24 +111,10 @@ object SeedDataRepository {
                 if (!primary.isNullOrBlank() && File(primary).exists()) primary else source.defaultPath
             }
             StorageSource.SD -> {
-                if (context != null) {
-                    resolveRemovableStoragePath(context, 0)
-                        ?: if (File(source.defaultPath).exists()) source.defaultPath else source.defaultPath
-                } else if (File(source.defaultPath).exists()) {
-                    source.defaultPath
-                } else {
-                    findMountedRemovableVolumes().firstOrNull()?.absolutePath ?: source.defaultPath
-                }
+                findSdCardVolume(context)?.absolutePath ?: source.defaultPath
             }
             StorageSource.OTG -> {
-                if (context != null) {
-                    resolveRemovableStoragePath(context, 1)
-                        ?: if (File(source.defaultPath).exists()) source.defaultPath else source.defaultPath
-                } else if (File(source.defaultPath).exists()) {
-                    source.defaultPath
-                } else {
-                    findMountedRemovableVolumes().getOrNull(1)?.absolutePath ?: source.defaultPath
-                }
+                findUsbOtgVolume(context)?.absolutePath ?: source.defaultPath
             }
             else -> source.defaultPath
         }
@@ -73,21 +122,21 @@ object SeedDataRepository {
 
     fun defaultMetadataMap(context: Context? = null): Map<StorageSource, StorageMetadata> {
         return StorageSource.entries.associateWith { src ->
-            var used = src.defaultUsedBytes
-            var total = src.defaultTotalBytes
             val resolvedPath = resolveSourcePath(src, context)
+            val dir = File(resolvedPath)
+            val isLocalSource = src in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)
 
-            if (src in setOf(StorageSource.DEVICE, StorageSource.SD, StorageSource.OTG)) {
-                val dir = File(resolvedPath)
-                if (dir.exists()) {
-                    runCatching {
-                        val stat = StatFs(dir.absolutePath)
-                        val realTotal = stat.totalBytes
-                        val realFree = stat.availableBytes
-                        if (realTotal > 0L) {
-                            total = realTotal
-                            used = (realTotal - realFree).coerceIn(0L, realTotal)
-                        }
+            var used = if (isLocalSource) 0L else src.defaultUsedBytes
+            var total = if (isLocalSource) 0L else src.defaultTotalBytes
+
+            if (isLocalSource && dir.exists() && dir.isDirectory) {
+                runCatching {
+                    val stat = StatFs(dir.absolutePath)
+                    val realTotal = stat.totalBytes
+                    val realFree = stat.availableBytes
+                    if (realTotal > 0L) {
+                        total = realTotal
+                        used = (realTotal - realFree).coerceIn(0L, realTotal)
                     }
                 }
             }
