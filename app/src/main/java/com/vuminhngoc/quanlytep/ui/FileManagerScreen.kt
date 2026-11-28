@@ -161,10 +161,6 @@ fun FileManagerScreen(viewModel: FileManagerViewModel) {
                                 text = { Text("Cài đặt") },
                                 onClick = { showOverflowMenu = false; viewModel.setShowSettings(true) }
                             )
-                            DropdownMenuItem(
-                                text = { Text("Khôi phục dữ liệu mẫu", color = colors.danger) },
-                                onClick = { showOverflowMenu = false; viewModel.restoreDemoData() }
-                            )
                         }
                     }
                 }
