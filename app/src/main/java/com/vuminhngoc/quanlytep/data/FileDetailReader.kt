@@ -1,8 +1,6 @@
 package com.vuminhngoc.quanlytep.data
 
 import android.content.Context
-import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import com.vuminhngoc.quanlytep.model.FileDetailInfo
 import com.vuminhngoc.quanlytep.model.FileNode
 import java.io.File
@@ -45,6 +43,23 @@ object FileDetailReader {
     private fun formatWithCommas(value: Long): String =
         DecimalFormat("#,###").format(value)
 
+    private fun parseFallbackSizeBytes(sizeText: String): Long {
+        val clean = sizeText.trim().replace(",", ".")
+        val match = Regex("""^([\d.]+)\s*(B|KB|MB|GB|TB)?$""", RegexOption.IGNORE_CASE).find(clean)
+            ?: return 0L
+        val num = match.groupValues[1].toDoubleOrNull() ?: return 0L
+        val unit = match.groupValues[2].uppercase(Locale.ROOT)
+        val multiplier = when (unit) {
+            "", "B" -> 1.0
+            "KB" -> 1024.0
+            "MB" -> 1024.0 * 1024.0
+            "GB" -> 1024.0 * 1024.0 * 1024.0
+            "TB" -> 1024.0 * 1024.0 * 1024.0 * 1024.0
+            else -> 1.0
+        }
+        return (num * multiplier).toLong().coerceAtLeast(0L)
+    }
+
     fun readDetails(
         context: Context?,
         item: FileNode,
@@ -53,23 +68,20 @@ object FileDetailReader {
         val rawPath = item.realFilePath?.takeIf { it.isNotBlank() }
             ?: if (fallbackPath.isNotBlank()) "$fallbackPath/${item.name}" else item.name
 
-        if (context != null && rawPath.startsWith("content://")) {
-            val doc = DocumentFile.fromSingleUri(context, Uri.parse(rawPath))
-                ?: DocumentFile.fromTreeUri(context, Uri.parse(rawPath))
-            if (doc != null && doc.exists()) {
-                val actualName = doc.name?.takeIf { it.isNotBlank() } ?: item.name
-                val timeStr = formatTimestamp(doc.lastModified(), item.modified)
-                val fmt = detectFileFormat(item, actualName)
+        if (!rawPath.startsWith("content://")) {
+            val file = File(rawPath)
+            if (file.exists()) {
+                val timeStr = formatTimestamp(file.lastModified(), item.modified)
+                val fmt = detectFileFormat(item, file.name)
 
-                return if (doc.isDirectory) {
-                    inspectDocumentFolder(
-                        root = doc,
-                        pathLabel = rawPath,
+                return if (file.isDirectory) {
+                    inspectRealFolder(
+                        root = file,
                         fileFormat = fmt,
                         formattedTime = timeStr
                     )
                 } else {
-                    val len = doc.length().coerceAtLeast(0L)
+                    val len = file.length().coerceAtLeast(0L)
                     FileDetailInfo(
                         fileFormat = fmt,
                         exactBytes = len,
@@ -77,42 +89,15 @@ object FileDetailReader {
                         folderCount = 0,
                         fileCount = 1,
                         formattedTime = timeStr,
-                        fullPath = doc.uri.toString(),
-                        isReadable = doc.canRead(),
-                        isWritable = doc.canWrite()
+                        fullPath = file.absolutePath,
+                        isReadable = file.canRead(),
+                        isWritable = file.canWrite()
                     )
                 }
             }
         }
 
-        val file = File(rawPath)
-        if (file.exists()) {
-            val timeStr = formatTimestamp(file.lastModified(), item.modified)
-            val fmt = detectFileFormat(item, file.name)
-
-            return if (file.isDirectory) {
-                inspectRealFolder(
-                    root = file,
-                    fileFormat = fmt,
-                    formattedTime = timeStr
-                )
-            } else {
-                val len = file.length().coerceAtLeast(0L)
-                FileDetailInfo(
-                    fileFormat = fmt,
-                    exactBytes = len,
-                    formattedSize = formatDetailedBytes(len),
-                    folderCount = 0,
-                    fileCount = 1,
-                    formattedTime = timeStr,
-                    fullPath = file.absolutePath,
-                    isReadable = file.canRead(),
-                    isWritable = file.canWrite()
-                )
-            }
-        }
-
-        val fallbackBytes = parseSizeToBytes(item.size)
+        val fallbackBytes = parseFallbackSizeBytes(item.size)
         return FileDetailInfo(
             fileFormat = detectFileFormat(item),
             exactBytes = fallbackBytes,
@@ -121,7 +106,7 @@ object FileDetailReader {
             fileCount = if (item.isFolder) item.children.count { !it.isFolder } else 1,
             formattedTime = item.modified.ifBlank { "—" },
             fullPath = rawPath,
-            isReadable = true,
+            isReadable = context != null,
             isWritable = false
         )
     }
@@ -157,43 +142,6 @@ object FileDetailReader {
             fileCount = files,
             formattedTime = formattedTime,
             fullPath = root.absolutePath,
-            isReadable = root.canRead(),
-            isWritable = root.canWrite()
-        )
-    }
-
-    private fun inspectDocumentFolder(
-        root: DocumentFile,
-        pathLabel: String,
-        fileFormat: String,
-        formattedTime: String
-    ): FileDetailInfo {
-        var totalBytes = 0L
-        var folders = 0
-        var files = 0
-
-        fun walk(dir: DocumentFile) {
-            val children = runCatching { dir.listFiles() }.getOrNull().orEmpty()
-            for (child in children) {
-                if (child.isDirectory) {
-                    folders++
-                    walk(child)
-                } else if (child.isFile) {
-                    files++
-                    totalBytes += child.length().coerceAtLeast(0L)
-                }
-            }
-        }
-
-        walk(root)
-        return FileDetailInfo(
-            fileFormat = fileFormat,
-            exactBytes = totalBytes,
-            formattedSize = formatDetailedBytes(totalBytes),
-            folderCount = folders,
-            fileCount = files,
-            formattedTime = formattedTime,
-            fullPath = pathLabel,
             isReadable = root.canRead(),
             isWritable = root.canWrite()
         )
